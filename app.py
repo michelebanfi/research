@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
+from streamlit_agraph import agraph, Node, Edge, Config as AgraphConfig
 from src.database import DatabaseClient
 from src.ingestion import FileRouter, DoclingParser, ASTParser, FileType
 from src.ai_engine import AIEngine
@@ -105,11 +106,25 @@ elif page == "Ingestion":
                         # 3. AI Processing
                         full_text = "\n".join([c['content'] for c in chunks])
                         summary = ai.generate_summary(full_text)
-                        keywords = ai.extract_keywords(full_text)
                         
                         st.text_area("Summary", summary, height=100)
-                        st.write(f"Keywords: {', '.join(keywords)}")
                         
+                        # New Graph Extraction
+                        st.text("Extracting Knowledge Graph...")
+                        graph_data = ai.extract_metadata_graph(full_text)
+                        
+                        nodes = graph_data.get('nodes', [])
+                        edges = graph_data.get('edges', [])
+                        
+                        st.write(f"Extracted {len(nodes)} nodes and {len(edges)} edges.")
+                        
+                        # Backward compat: keywords = node names
+                        keywords = [n['name'] for n in nodes]
+                        if not keywords:
+                            keywords = ai.extract_keywords(full_text) # Fallback if graph fail or empty
+                        
+                        st.write(f"Keywords (Nodes): {', '.join(keywords)}")
+
                         # 4. Embeddings & Storage
                         st.text("Generating embeddings locally (Async)...")
                         
@@ -142,8 +157,11 @@ elif page == "Ingestion":
                             # Store chunks
                             db.store_chunks(file_id, chunks)
                             
-                            # Store Keywords and Links
+                            # Store Keywords (Legacy/Compat)
                             db.store_keywords(file_id, keywords)
+                            
+                            # Store Graph Data
+                            db.store_graph_data(file_id, nodes, edges)
                             
                             st.success("Ingestion Complete!")
                         else:
@@ -169,7 +187,7 @@ elif page == "Knowledge Explorer":
             selected_project_name = st.selectbox("Select Project", list(project_options.keys()))
             selected_project_id = project_options[selected_project_name]
             
-            tab1, tab2 = st.tabs(["Browse Files", "Semantic Search"])
+            tab1, tab2, tab3 = st.tabs(["Browse Files", "Semantic Search", "Graph Explorer"])
 
             with tab1:
                 st.subheader("Files")
@@ -218,6 +236,35 @@ elif page == "Knowledge Explorer":
                                 with st.spinner("Re-ranking results with Qwen..."):
                                     results = ai.rerank_results(query, results, top_k=5)
                             
+                            # --- Hybrid Search Context ---
+                            if results:
+                                with st.expander("📚 Broaden Your Research (Graph Context)", expanded=True):
+                                    top_file_id = results[0].get('file_id')
+                                    if top_file_id:
+                                        col_g1, col_g2 = st.columns(2)
+                                        
+                                        with col_g1:
+                                            st.markdown("**Related Concepts (from Top Result):**")
+                                            graph_rows = db.get_file_graph(top_file_id)
+                                            concepts = set()
+                                            for row in graph_rows:
+                                                concepts.add(row['source_name'])
+                                                concepts.add(row['target_name'])
+                                            
+                                            if concepts:
+                                                st.info(", ".join(list(concepts)[:10]) + ("..." if len(concepts)>10 else ""))
+                                            else:
+                                                st.caption("No graph concepts found.")
+
+                                        with col_g2:
+                                            st.markdown("**Related Papers (via Graph):**")
+                                            related_files = db.get_related_files(top_file_id)
+                                            if related_files:
+                                                for rf in related_files:
+                                                    st.markdown(f"- **{rf['name']}** ({rf['shared_count']} shared concepts)")
+                                            else:
+                                                st.caption("No related papers found.")
+
                             for res in results:
                                 score = res.get('rerank_score', res.get('similarity'))
                                 score_label = "Re-rank Score" if 'rerank_score' in res else "Sim"
@@ -226,3 +273,50 @@ elif page == "Knowledge Explorer":
                                 st.divider()
                         else:
                             st.error("Failed to generate query embedding.")
+            
+            with tab3:
+                st.subheader("Graph Explorer")
+                files = db.get_project_files(selected_project_id)
+                if files:
+                    file_options = {f['name']: f['id'] for f in files}
+                    selected_file_name_graph = st.selectbox("Select File to Visualize", list(file_options.keys()))
+                    
+                    if selected_file_name_graph and st.button("Visualize Graph"):
+                        selected_file_id = file_options[selected_file_name_graph]
+                        
+                        graph_data_rows = db.get_file_graph(selected_file_id)
+                        
+                        if graph_data_rows:
+                            nodes = []
+                            edges = []
+                            
+                            # We need to map node names to some ID, but names are unique per type?
+                            # DB query returns names.
+                            # Just use names as IDs for visualization to keep it simple
+                            
+                            added_nodes = set()
+                            
+                            for row in graph_data_rows:
+                                s_name = row['source_name']
+                                t_name = row['target_name']
+                                s_type = row['source_type']
+                                t_type = row['target_type']
+                                relation = row['edge_type']
+                                
+                                if s_name not in added_nodes:
+                                    nodes.append(Node(id=s_name, label=s_name, size=20, color="#FF5733" if s_type == "Concept" else "#33C1FF"))
+                                    added_nodes.add(s_name)
+                                
+                                if t_name not in added_nodes:
+                                    nodes.append(Node(id=t_name, label=t_name, size=20, color="#FF5733" if t_type == "Concept" else "#33C1FF"))
+                                    added_nodes.add(t_name)
+                                    
+                                edges.append(Edge(source=s_name, target=t_name, label=relation))
+                            
+                            config = AgraphConfig(width=700, height=500, directed=True, nodeHighlightBehavior=True, highlightColor="#F7A7A6", collapsible=True)
+                            
+                            return_value = agraph(nodes=nodes, edges=edges, config=config)
+                        else:
+                            st.info("No graph data found for this file. Try re-ingesting it.")
+
+

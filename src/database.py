@@ -125,3 +125,46 @@ class DatabaseClient:
         }
         res = self.client.rpc("match_file_chunks", params).execute()
         return res.data
+
+    def store_graph_data(self, file_id: str, nodes: List[Dict[str, str]], edges: List[Dict[str, str]]):
+        """
+        Stores graph nodes and edges using the store_graph_data RPC.
+        nodes: List of {'name': '...', 'type': '...'}
+        edges: List of {'source': '...', 'target': '...', 'relation': '...'}
+        """
+        try:
+            params = {
+                "p_file_id": file_id,
+                "p_nodes": nodes,
+                "p_edges": edges
+            }
+            self.client.rpc("store_graph_data", params).execute()
+        except Exception as e:
+            print(f"Error storing graph data: {e}")
+
+    def get_file_graph(self, file_id: str) -> List[Dict[str, Any]]:
+        """
+        Retrieves the 1-hop neighborhood for a file.
+        Returns list of edges with node properties.
+        """
+        try:
+            response = self.client.rpc("get_file_graph", {"p_file_id": file_id}).execute()
+            return response.data
+        except Exception as e:
+            print(f"Error getting file graph: {e}")
+            return []
+
+    def get_graph_traversal(self, start_node_id: str, max_depth: int = 2) -> List[Dict[str, Any]]:
+        """
+        Traverses graph from a start node.
+        """
+        try:
+            params = {
+                "start_node_id": start_node_id,
+                "max_depth": max_depth
+            }
+            response = self.client.rpc("get_graph_traversal", params).execute()
+            return response.data
+        except Exception as e:
+            print(f"Error traversing graph: {e}")
+            return []

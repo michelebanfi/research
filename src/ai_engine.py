@@ -3,6 +3,7 @@ import ollama
 import asyncio
 from typing import List, Any
 from src.config import Config
+from typing import Dict
 
 class AIEngine:
     def __init__(self):
@@ -61,17 +62,39 @@ class AIEngine:
             print(f"Error generating summary: {e}")
             return "Summary generation failed."
 
-    def extract_keywords(self, text: str) -> List[str]:
-        """Extracts keywords from the text."""
+    def extract_metadata_graph(self, text: str) -> Dict[str, Any]:
+        """
+        Extracts entities (nodes) and relationships (edges) from the text.
+        Returns a dict with 'nodes' and 'edges'.
+        """
         try:
-            prompt = f"Extract 5-10 technical keywords from the following text. Return them as a comma-separated list, nothing else:\n\n{text[:4000]}"
+            prompt = (
+                "Analyze the following technical content and extract a Knowledge Graph.\n"
+                "Identify key entities (Nodes) and their relationships (Edges).\n"
+                "Return ONLY a JSON object with this structure:\n"
+                "{\n"
+                '  "nodes": [{"name": "Entity Name", "type": "Concept|Person|Tool|Metric|etc"}],\n'
+                '  "edges": [{"source": "Entity Name", "target": "Entity Name", "relation": "relationship_type"}]\n'
+                "}\n"
+                "Ensure the JSON is valid and contains no other text.\n\n"
+                f"{text[:4000]}"
+            )
             response = self.client.generate(model=self.model, prompt=prompt)
-            keywords_str = response["response"]
-            keywords = [k.strip() for k in keywords_str.split(",")]
-            return keywords
+            content = response["response"]
+            
+            # Simple cleanup to find JSON object
+            import json
+            start = content.find('{')
+            end = content.rfind('}') + 1
+            if start != -1 and end != -1:
+                json_str = content[start:end]
+                data = json.loads(json_str)
+                return data
+            return {"nodes": [], "edges": []}
+            
         except Exception as e:
-            print(f"Error extracting keywords: {e}")
-            return []
+            print(f"Error extracting graph metadata: {e}")
+            return {"nodes": [], "edges": []}
 
     def rerank_results(self, query: str, results: List[Any], top_k: int = 5) -> List[Any]:
         """
