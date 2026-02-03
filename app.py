@@ -103,16 +103,46 @@ elif page == "Ingestion":
                         
                         st.write(f"Parsed {len(chunks)} chunks.")
                         
-                        # 3. AI Processing
+                        # 3. AI Processing (Async & Parallel)
+                        st.text("Running AI Analysis (Summary, Graph, Embeddings) in parallel...")
+                        
                         full_text = "\n".join([c['content'] for c in chunks])
-                        summary = ai.generate_summary(full_text)
+                        
+                        async def run_ingestion_pipeline():
+                            # Create tasks
+                            summary_task = ai.generate_summary_async(full_text)
+                            graph_task = ai.extract_metadata_graph_async(full_text)
+                            
+                            # Embedding tasks
+                            embedding_tasks = [ai.generate_embedding_async(c['content']) for c in chunks]
+                            
+                            # Execute all
+                            # We can gather summary and graph, and also gather embeddings
+                            
+                            # Let's group them:
+                            # 1. Summary
+                            # 2. Graph
+                            # 3. Embeddings (list of tasks)
+                            
+                            results = await asyncio.gather(
+                                summary_task,
+                                graph_task,
+                                asyncio.gather(*embedding_tasks)
+                            )
+                            return results
+
+                        # Run the pipeline
+                        summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
+                        
+                        # Assign embeddings back to chunks
+                        for i, emb in enumerate(embeddings):
+                            chunks[i]['embedding'] = emb
+
+                        st.write(f"Generated {len(embeddings)} embeddings.")
                         
                         st.text_area("Summary", summary, height=100)
                         
-                        # New Graph Extraction
-                        st.text("Extracting Knowledge Graph...")
-                        graph_data = ai.extract_metadata_graph(full_text)
-                        
+                        # Graph Data
                         nodes = graph_data.get('nodes', [])
                         edges = graph_data.get('edges', [])
                         
@@ -121,12 +151,13 @@ elif page == "Ingestion":
                         # Backward compat: keywords = node names
                         keywords = [n['name'] for n in nodes]
                         if not keywords:
-                            keywords = ai.extract_keywords(full_text) # Fallback if graph fail or empty
+                             # Fallback or empty
+                             pass
                         
                         st.write(f"Keywords (Nodes): {', '.join(keywords)}")
 
-                        # 4. Embeddings & Storage
-                        st.text("Generating embeddings locally (Async)...")
+                        # 4. Storage
+                        st.text("Storing data...")
                         
                         # Store File Metadata first to get ID
                         file_meta = db.upload_file_metadata(
@@ -139,20 +170,6 @@ elif page == "Ingestion":
                         
                         if file_meta:
                             file_id = file_meta['id']
-                            
-                            # Async Embedding Generation
-                            async def process_embeddings():
-                                tasks = [ai.generate_embedding_async(c['content']) for c in chunks]
-                                return await asyncio.gather(*tasks)
-
-                            # Run async loop
-                            embeddings = asyncio.run(process_embeddings())
-                            
-                            # Assign embeddings back to chunks
-                            for i, emb in enumerate(embeddings):
-                                chunks[i]['embedding'] = emb
-                            
-                            st.write(f"Generated {len(embeddings)} embeddings.")
 
                             # Store chunks
                             db.store_chunks(file_id, chunks)
@@ -229,7 +246,7 @@ elif page == "Knowledge Explorer":
                         query_embedding = ai.generate_embedding(query)
                         if query_embedding:
                             # 1. Vector Search
-                            results = db.search_vectors(query_embedding, match_threshold=0.3, match_count=10, project_id=selected_project_id)
+                            results = db.search_vectors(query_embedding, match_threshold=0.3, project_id=selected_project_id)
                             
                             # 2. Re-ranking
                             if do_rerank and results:
@@ -248,8 +265,10 @@ elif page == "Knowledge Explorer":
                                             graph_rows = db.get_file_graph(top_file_id)
                                             concepts = set()
                                             for row in graph_rows:
-                                                concepts.add(row['source_name'])
-                                                concepts.add(row['target_name'])
+                                                # Filter out Persons or strict types if available
+                                                if row.get('source_type') not in ['Person', 'Organization'] and row.get('target_type') not in ['Person', 'Organization']:
+                                                    concepts.add(row['source_name'])
+                                                    concepts.add(row['target_name'])
                                             
                                             if concepts:
                                                 st.info(", ".join(list(concepts)[:10]) + ("..." if len(concepts)>10 else ""))

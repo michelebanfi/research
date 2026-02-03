@@ -74,41 +74,36 @@ class ASTParser:
 
             for node in tree.body:
                 if isinstance(node, ast.ClassDef):
-                    # For a class, we want to extract its docstring/signature as one chunk
-                    # And then each method as a separate chunk
-                    
-                    # 1. Class Header / Docstring
-                    # We can try to approximate by taking everything up to the first method or just the logic
-                    # A simple way involves getting the class source and stripping methods, or just taking the top.
-                    
                     class_name = node.name
-                    # Let's create a chunk for the class definition itself (excluding body methods if possible, 
-                    # but AST doesn't give clean "header only" range easily without traversing children).
-                    # Simplified: Chunk the whole class docstring + signature if present?
-                    # Or just: 
-                    # For each method in body -> chunk with metadata parent_class = class_name
-                    # For the class itself -> maybe just a summary?
+                    
+                    # 1. Capture Class Header / Docstring Context
+                    # We'll take the first few lines of the class (docstring/init) to give context
+                    # Or simpler: just "Class: {class_name}" plus docstring if available.
+                    
+                    class_doc = ast.get_docstring(node)
+                    class_context = f"Parent Class: {class_name}\n"
+                    if class_doc:
+                        class_context += f"Class Docstring: {class_doc}\n"
                     
                     # Iterate methods
                     methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
                     
-                    # If we want to capture class-level vars or docstring, we should
-                    # But the requirement ING-04 says: "extract methods as individual chunks... while preserving the parent class name"
-                    
                     for method in methods:
                         method_content = get_segment(method)
+                        # Prepend context
+                        full_content = f"{class_context}\n{method_content}"
+                        
                         chunks.append({
-                            "content": method_content,
+                            "content": full_content,
                             "chunk_index": chunk_index,
                             "type": "method",
                             "name": method.name,
                             "parent_class": class_name,
-                            "metadata": {"parent_class": class_name}
+                            "metadata": {"parent_class": class_name, "context_added": True}
                         })
                         chunk_index += 1
                         
-                    # What about the class itself (e.g. valid Pydantic models with no methods)?
-                    # If it has no methods, we should chunk the whole class.
+                    # If it has no methods, chunk the whole class
                     if not methods:
                         content = get_segment(node)
                         chunks.append({

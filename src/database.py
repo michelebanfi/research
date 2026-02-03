@@ -115,7 +115,7 @@ class DatabaseClient:
             print(f"Error getting related files: {e}")
             return []
 
-    def search_vectors(self, query_embedding: List[float], match_threshold: float, match_count: int, project_id: str):
+    def search_vectors(self, query_embedding: List[float], match_threshold: float, project_id: str, match_count: int = 50):
         """Call the match_file_chunks RPC function."""
         params = {
             "query_embedding": query_embedding,
