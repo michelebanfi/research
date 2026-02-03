@@ -1,6 +1,7 @@
 
 import os
 import streamlit as st
+import asyncio
 import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
@@ -110,9 +111,9 @@ elif page == "Ingestion":
                         st.write(f"Keywords: {', '.join(keywords)}")
                         
                         # 4. Embeddings & Storage
-                        st.text("Generating embeddings and storing...")
+                        st.text("Generating embeddings locally (Async)...")
                         
-                        # Store File Metadata
+                        # Store File Metadata first to get ID
                         file_meta = db.upload_file_metadata(
                             project_id=selected_project_id,
                             name=uploaded_file.name,
@@ -124,10 +125,20 @@ elif page == "Ingestion":
                         if file_meta:
                             file_id = file_meta['id']
                             
-                            # Embed chunks
-                            for chunk in chunks:
-                                chunk['embedding'] = ai.generate_embedding(chunk['content'])
+                            # Async Embedding Generation
+                            async def process_embeddings():
+                                tasks = [ai.generate_embedding_async(c['content']) for c in chunks]
+                                return await asyncio.gather(*tasks)
+
+                            # Run async loop
+                            embeddings = asyncio.run(process_embeddings())
                             
+                            # Assign embeddings back to chunks
+                            for i, emb in enumerate(embeddings):
+                                chunks[i]['embedding'] = emb
+                            
+                            st.write(f"Generated {len(embeddings)} embeddings.")
+
                             # Store chunks
                             db.store_chunks(file_id, chunks)
                             
@@ -140,6 +151,8 @@ elif page == "Ingestion":
                             
                     except Exception as e:
                         st.error(f"Error during ingestion: {e}")
+                        import traceback
+                        st.text(traceback.format_exc())
                     finally:
                         if os.path.exists(tmp_path):
                             os.unlink(tmp_path)

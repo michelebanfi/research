@@ -1,14 +1,20 @@
-
 import os
 from supabase import create_client, Client
 from typing import List, Dict, Any, Optional
+from src.config import Config
 
 class DatabaseClient:
     def __init__(self):
-        self.url = os.environ.get("SUPABASE_URL")
-        self.key = os.environ.get("SUPABASE_KEY")
-        if not self.url or not self.key:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
+        # Validation happens here or handled gracefully
+        try:
+             Config.validate()
+        except ValueError as e:
+             # Only raise if we are likely in runtime needing DB
+             # But for now, let's allow it to fail fast as before
+             raise e
+             
+        self.url = Config.SUPABASE_URL
+        self.key = Config.SUPABASE_KEY
         self.client: Client = create_client(self.url, self.key)
 
     def create_project(self, name: str) -> Dict[str, Any]:
@@ -17,11 +23,12 @@ class DatabaseClient:
             data, count = self.client.table("projects").insert({"name": name}).execute()
             if data and len(data) > 0:
                  return data[1][0]
+            # Fallback for old supabase-py version
+            if hasattr(data, 'data') and data.data:
+                return data.data[0]
             return None
         except Exception as e:
             print(f"Error creating project: {e}")
-            if hasattr(data, 'data'):
-                return data.data[0]
             return None
 
     def get_projects(self) -> List[Dict[str, Any]]:
@@ -78,94 +85,32 @@ class DatabaseClient:
 
     def store_keywords(self, file_id: str, keywords: List[str]):
         """
-        Stores keywords and links them to the file.
-        1. Ensure each keyword exists in `keywords` table (ID lookup).
-        2. Create entry in `file_keywords`.
+        Stores keywords and links them to the file using RPC.
         """
         if not keywords:
             return
 
-        keyword_ids = []
-        for kw in keywords:
-            kw = kw.lower().strip()
-            # Try to select first
-            try:
-                res = self.client.table("keywords").select("id").eq("keyword", kw).execute()
-                if res.data:
-                    keyword_ids.append(res.data[0]['id'])
-                else:
-                    # Insert
-                    res_ins = self.client.table("keywords").insert({"keyword": kw}).execute()
-                    if res_ins.data:
-                         keyword_ids.append(res_ins.data[0]['id'])
-            except Exception as e:
-                # Handle race condition or unique constraint error if parallel
-                print(f"Error storing keyword {kw}: {e}")
-                # Retry select
-                res = self.client.table("keywords").select("id").eq("keyword", kw).execute()
-                if res.data:
-                    keyword_ids.append(res.data[0]['id'])
-        
-        # Link to file
-        links = [{"file_id": file_id, "keyword_id": kid} for kid in keyword_ids]
-        if links:
-            try:
-                self.client.table("file_keywords").insert(links).execute()
-            except Exception as e:
-                 print(f"Error linking keywords for file {file_id}: {e}")
+        try:
+            # Normalize keywords
+            normalized_keywords = [kw.strip().lower() for kw in keywords if kw.strip()]
+            
+            # Call RPC
+            self.client.rpc("link_file_keywords", {
+                "p_file_id": file_id,
+                "p_keywords": normalized_keywords
+            }).execute()
+            
+        except Exception as e:
+            print(f"Error linking keywords for file {file_id}: {e}")
 
     def get_related_files(self, file_id: str) -> List[Dict[str, Any]]:
         """
-        Finds related files based on shared keywords.
-        Returns a list of files with a 'shared_count' and 'keywords'.
+        Finds related files based on shared keywords using RPC.
+        Returns a list of files with a 'shared_count'.
         """
-        # 1. Get keywords for this file
         try:
-            # We need to perform a join or subquery. Supabase-py is limited, but we can use RPC or raw SQL or multiple queries.
-            # Let's use RPC if complex, or multiple queries for simplicity here since no complex graph RPC exists yet.
-            
-            # Get keyword IDs for the file
-            fk_res = self.client.table("file_keywords").select("keyword_id").eq("file_id", file_id).execute()
-            kw_ids = [item['keyword_id'] for item in fk_res.data]
-            
-            if not kw_ids:
-                return []
-            
-            # Find other files with these keywords
-            # Using 'in' filter
-            # We want to group by file_id and count matches.
-            # This is hard with simple client calls.
-            # Let's fetch all file_keywords where keyword_id in kw_ids
-            
-            # Assuming kw_ids list is not huge
-            all_matches = []
-            # Splitting in chunks if too many keywords, for now assuming < 20
-            target_ids_tuple = tuple(kw_ids)
-            # Supabase client .in_ takes a list
-            res_matches = self.client.table("file_keywords").select("file_id, keyword_id").in_("keyword_id", kw_ids).execute()
-            
-            # Process in python
-            file_counts = {}
-            for item in res_matches.data:
-                fid = item['file_id']
-                if fid == file_id:
-                    continue
-                file_counts[fid] = file_counts.get(fid, 0) + 1
-            
-            # Sort by count
-            sorted_files = sorted(file_counts.items(), key=lambda x: x[1], reverse=True)
-            
-            # Get file details for top 5
-            top_files = []
-            for fid, count in sorted_files[:5]:
-                f_res = self.client.table("files").select("*").eq("id", fid).execute()
-                if f_res.data:
-                    file_info = f_res.data[0]
-                    file_info['shared_count'] = count
-                    top_files.append(file_info)
-            
-            return top_files
-
+            response = self.client.rpc("get_related_files", {"p_file_id": file_id}).execute()
+            return response.data
         except Exception as e:
             print(f"Error getting related files: {e}")
             return []

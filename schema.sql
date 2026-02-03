@@ -71,3 +71,51 @@ begin
   limit match_count;
 end;
 $$;
+
+-- Function to link keywords to a file (Batch Upsert)
+create or replace function link_file_keywords(p_file_id uuid, p_keywords text[])
+returns void language plpgsql as $$
+begin
+  with inserted_keywords as (
+    insert into keywords (keyword)
+    select distinct unnest(p_keywords)
+    on conflict (keyword) do nothing
+    returning id
+  ),
+  existing_keywords as (
+    select id from keywords where keyword = any(p_keywords)
+  ),
+  all_keyword_ids as (
+    select id from inserted_keywords
+    union
+    select id from existing_keywords
+  )
+  insert into file_keywords (file_id, keyword_id)
+  select p_file_id, id from all_keyword_ids
+  on conflict do nothing;
+end;
+$$;
+
+-- Function to get related files based on shared keywords
+create or replace function get_related_files(p_file_id uuid)
+returns table (id uuid, name text, summary text, shared_count bigint)
+language plpgsql as $$
+begin
+  return query
+  with my_keywords as (
+    select keyword_id from file_keywords where file_keywords.file_id = p_file_id
+  ),
+  related_counts as (
+    select fk.file_id, count(fk.keyword_id) as cnt
+    from file_keywords fk
+    join my_keywords mk on fk.keyword_id = mk.keyword_id
+    where fk.file_id != p_file_id
+    group by fk.file_id
+  )
+  select f.id, f.name, f.summary, rc.cnt
+  from related_counts rc
+  join files f on f.id = rc.file_id
+  order by rc.cnt desc
+  limit 5;
+end;
+$$;

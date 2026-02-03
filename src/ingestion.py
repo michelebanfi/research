@@ -1,10 +1,10 @@
-
 import os
 import ast
 from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any
 from docling.document_converter import DocumentConverter
+from docling.chunking import HierarchicalChunker
 
 class FileType(Enum):
     CODE = "code"
@@ -17,54 +17,33 @@ class FileRouter:
         ext = Path(file_path).suffix.lower()
         if ext == ".py":
             return FileType.CODE
-        elif ext in [".pdf", ".md", ".docx", ".txt"]: # Docling supports these and more
+        elif ext in [".pdf", ".md", ".docx", ".txt"]:
             return FileType.DOCUMENT
         return FileType.UNKNOWN
 
 class DoclingParser:
     def __init__(self):
         self.converter = DocumentConverter()
+        self.chunker = HierarchicalChunker()
 
     def parse(self, file_path: str) -> List[Dict[str, Any]]:
         """
-        Parses a document using Docling.
-        Returns a list of chunks (dicts) with content and metadata (like chunk index).
-        For now, we'll extract the full markdown/text and chunk it simply or rely on Docling's structure if available.
-        To keep it simple as per requirements: "converted to Markdown, and chunked respecting the layout hierarchy."
+        Parses a document using Docling and HierarchicalChunker.
+        Returns a list of chunks (dicts) with content and metadata.
         """
         try:
             result = self.converter.convert(file_path)
-            # result.document is the Docling document object.
-            # We can export to markdown.
-            md_content = result.document.export_to_markdown()
-            
-            # Simple chunking by double newline for now, or we could walk the document structure.
-            # Requirement says "chunked respecting the layout hierarchy".
-            # Docling's export_to_markdown preserves layout. Splitting by headers (#) might be better.
-            # Let's do a naive split by 1000 chars for now or headers if possible. 
-            # Better: split by double newlines and group.
+            # Use Docling's hierarchical chunker
+            chunk_iter = self.chunker.chunk(result.document)
             
             chunks = []
-            raw_chunks = md_content.split("\n\n")
-            current_chunk = ""
-            chunk_index = 0
-            
-            for raw in raw_chunks:
-                if len(current_chunk) + len(raw) < 1000:
-                    current_chunk += raw + "\n\n"
-                else:
-                    if current_chunk.strip():
-                        chunks.append({
-                            "content": current_chunk.strip(),
-                            "chunk_index": chunk_index
-                        })
-                        chunk_index += 1
-                    current_chunk = raw + "\n\n"
-            
-            if current_chunk.strip():
+            for i, chunk in enumerate(chunk_iter):
+                # chunk.text contains the content
+                # chunk.meta contains metadata like headers
                 chunks.append({
-                    "content": current_chunk.strip(),
-                    "chunk_index": chunk_index
+                    "content": chunk.text,
+                    "chunk_index": i,
+                    "metadata": chunk.meta.export_json_dict() if hasattr(chunk.meta, 'export_json_dict') else str(chunk.meta)
                 })
                 
             return chunks
@@ -75,7 +54,7 @@ class DoclingParser:
 class ASTParser:
     def parse(self, file_path: str) -> List[Dict[str, Any]]:
         """
-        Parses Python code using AST to split by classes and functions.
+        Parses Python code using AST to split by classes and methods granularly.
         """
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -85,27 +64,75 @@ class ASTParser:
             chunks = []
             chunk_index = 0
             
-            # Helper to extract source segment
             lines = source.splitlines(keepends=True)
             
             def get_segment(node):
                 # lineno is 1-indexed, end_lineno is inclusive
+                if not hasattr(node, 'lineno') or not hasattr(node, 'end_lineno'):
+                    return ""
                 return "".join(lines[node.lineno-1 : node.end_lineno])
 
-            # Walk the tree for top-level classes and functions
             for node in tree.body:
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if isinstance(node, ast.ClassDef):
+                    # For a class, we want to extract its docstring/signature as one chunk
+                    # And then each method as a separate chunk
+                    
+                    # 1. Class Header / Docstring
+                    # We can try to approximate by taking everything up to the first method or just the logic
+                    # A simple way involves getting the class source and stripping methods, or just taking the top.
+                    
+                    class_name = node.name
+                    # Let's create a chunk for the class definition itself (excluding body methods if possible, 
+                    # but AST doesn't give clean "header only" range easily without traversing children).
+                    # Simplified: Chunk the whole class docstring + signature if present?
+                    # Or just: 
+                    # For each method in body -> chunk with metadata parent_class = class_name
+                    # For the class itself -> maybe just a summary?
+                    
+                    # Iterate methods
+                    methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                    
+                    # If we want to capture class-level vars or docstring, we should
+                    # But the requirement ING-04 says: "extract methods as individual chunks... while preserving the parent class name"
+                    
+                    for method in methods:
+                        method_content = get_segment(method)
+                        chunks.append({
+                            "content": method_content,
+                            "chunk_index": chunk_index,
+                            "type": "method",
+                            "name": method.name,
+                            "parent_class": class_name,
+                            "metadata": {"parent_class": class_name}
+                        })
+                        chunk_index += 1
+                        
+                    # What about the class itself (e.g. valid Pydantic models with no methods)?
+                    # If it has no methods, we should chunk the whole class.
+                    if not methods:
+                        content = get_segment(node)
+                        chunks.append({
+                            "content": content,
+                            "chunk_index": chunk_index,
+                            "type": "class",
+                            "name": class_name,
+                            "metadata": {"is_class_def": True}
+                        })
+                        chunk_index += 1
+                        
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # Standalone function
                     content = get_segment(node)
                     chunks.append({
                         "content": content,
                         "chunk_index": chunk_index,
-                        "type": type(node).__name__,
+                        "type": "function",
                         "name": node.name
                     })
                     chunk_index += 1
                 else:
-                    # For other top-level statements (imports, assignments), we could group them.
-                    # Ignored for now to keep it semantic as requested (Classes/Functions).
+                    # Imports, constants, globals
+                    # Optionally group them?
                     pass
                     
             return chunks

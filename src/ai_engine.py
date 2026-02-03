@@ -1,27 +1,62 @@
 import os
 import ollama
+import asyncio
 from typing import List, Any
+from src.config import Config
 
 class AIEngine:
     def __init__(self):
-        self.model = os.environ.get("OLLAMA_MODEL", "qwen:2.5")
-        self.embed_model = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+        self.model = Config.OLLAMA_MODEL
+        self.embed_model = Config.OLLAMA_EMBED_MODEL
+        self.client = ollama.Client()
+        self.async_client = ollama.AsyncClient()
 
     def generate_embedding(self, text: str) -> List[float]:
         """Generates embedding for a given text."""
         try:
-            response = ollama.embeddings(model=self.embed_model, prompt=text)
+            response = self.client.embeddings(model=self.embed_model, prompt=text)
             return response["embedding"]
         except Exception as e:
             print(f"Error generating embedding: {e}")
             return []
 
-    def generate_summary(self, text: str) -> str:
-        """Generates a technical summary of the text."""
+    async def generate_embedding_async(self, text: str) -> List[float]:
+        """Generates embedding for a given text asynchronously."""
         try:
-            prompt = f"Summarize the following technical content concisely:\n\n{text[:4000]}" # Truncate to avoid context window issues
-            response = ollama.generate(model=self.model, prompt=prompt)
-            return response["response"]
+            response = await self.async_client.embeddings(model=self.embed_model, prompt=text)
+            return response["embedding"]
+        except Exception as e:
+            print(f"Error generating embedding async: {e}")
+            return []
+
+    def generate_summary(self, text: str) -> str:
+        """Generates a technical summary of the text. Uses map-reduce for long texts."""
+        MAX_CHUNK_SIZE = 4000
+        
+        try:
+            if len(text) <= MAX_CHUNK_SIZE:
+                prompt = f"Summarize the following technical content concisely:\n\n{text}"
+                response = self.client.generate(model=self.model, prompt=prompt)
+                return response["response"]
+            
+            # Map Step: Split and summarize chunks
+            chunks = [text[i:i+MAX_CHUNK_SIZE] for i in range(0, len(text), MAX_CHUNK_SIZE)]
+            chunk_summaries = []
+            for chunk in chunks:
+                # Recurse or call generate for chunk
+                # Ideally we want to process these in parallel if using async, but here we are in sync method
+                # We can just call self.generate_summary recursively which handles the splitting if chunk is still too big (unlikely with this split)
+                # or just call client.generate if we are sure it fits.
+                # Let's call client.generate to be efficient for this level.
+                prompt = f"Summarize the following technical content concisely:\n\n{chunk}"
+                response = self.client.generate(model=self.model, prompt=prompt)
+                chunk_summaries.append(response["response"])
+            
+            # Reduce Step: Summarize the combined summaries
+            combined_summary = "\n\n".join(chunk_summaries)
+            # Recursively call generate_summary in case the combined summary is still huge
+            return self.generate_summary(combined_summary)
+
         except Exception as e:
             print(f"Error generating summary: {e}")
             return "Summary generation failed."
@@ -30,7 +65,7 @@ class AIEngine:
         """Extracts keywords from the text."""
         try:
             prompt = f"Extract 5-10 technical keywords from the following text. Return them as a comma-separated list, nothing else:\n\n{text[:4000]}"
-            response = ollama.generate(model=self.model, prompt=prompt)
+            response = self.client.generate(model=self.model, prompt=prompt)
             keywords_str = response["response"]
             keywords = [k.strip() for k in keywords_str.split(",")]
             return keywords
@@ -60,15 +95,7 @@ class AIEngine:
             ]
             
             rerankrequest = RerankRequest(query=query, passages=passages)
-            ranked_results = ranker.rank(rerankrequest)
-            
-            # Map back scores to original results
-            # FlashRank returns list of formatted dicts with 'id', 'text', 'score', 'meta'
-            # We need to preserve the original metadata from 'results'
-            
-            # Create a map of id -> result
-            # Note: We synthesized IDs above if missing. 
-            # Ideally results from DB have 'id'.
+            ranked_results = ranker.rerank(rerankrequest)
             
             id_to_result = {}
             for i, res in enumerate(results):
