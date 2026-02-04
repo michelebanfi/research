@@ -45,7 +45,7 @@ if "graph_edges" not in st.session_state:
     st.session_state.graph_edges = []
 
 # --- Main Layout ---
-st.title("🧠 Local-Brain Research Assistant")
+st.title("Local-Brain Research Assistant")
 
 # --- Collapsible Project Sidebar ---
 with st.sidebar:
