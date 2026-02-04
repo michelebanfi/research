@@ -1,9 +1,0 @@
-| ID | Category | Requirement Name | Description | Priority |
-| --- | --- | --- | --- | --- |
-| **AI-04** | AI Processing | **Map-Reduce Summarization** | Prevent data loss in `src/ai_engine.py` by implementing a recursive map-reduce strategy for inputs exceeding the token limit (currently truncated at 4000 chars), ensuring full-document summaries. | **Critical** |
-| **DB-04** | Database | **Batch Keyword RPC** | Eliminate the N+1 query anti-pattern in `store_keywords` by creating a Supabase RPC function (`link_file_keywords`) to handle keyword upserts and linking in a single transaction. | **High** |
-| **ING-04** | Ingestion Pipeline | **Granular Method Chunking** | Refactor `ASTParser` in `src/ingestion.py` to extract methods as individual chunks rather than grouping entire classes, while preserving the parent class name in metadata for context. | **High** |
-| **SYS-04** | System Architecture | **Async Embedding Pipeline** | Refactor `app.py` and `ai_engine.py` to use `asyncio` and `ollama.AsyncClient`, allowing parallel generation of embeddings for file chunks instead of blocking sequential calls. | **High** |
-| **DB-05** | Database | **Server-Side Search Logic** | Move the "Related Files" aggregation logic from Python (client-side) to SQL/RPC to prevent fetching excessive rows and crashing the application as the dataset grows. | **Medium** |
-| **SYS-05** | System Architecture | **Robust Configuration** | Centralize environment variable loading (e.g., in a `config.py` or `__init__`) to prevent immediate crashes in `DatabaseClient` when imported in testing environments without `.env` loaded. | **Medium** |
-| **ING-05** | Ingestion Pipeline | **Hierarchical Doc Chunking** | Replace naive double-newline splitting in `DoclingParser` with Docling’s native `HierarchicalChunker` to respect document structure (headers, paragraphs) during segmentation. | **Low** |
