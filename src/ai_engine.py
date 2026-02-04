@@ -197,3 +197,66 @@ class AIEngine:
         except Exception as e:
             print(f"Error re-ranking with FlashRank: {e}")
             return results[:top_k] # Fallback
+
+    async def chat_with_context_async(self, query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Generates a response using RAG (Retrieval Augmented Generation).
+        
+        Args:
+            query: The user's question
+            context_chunks: List of dicts with 'content', 'similarity', optionally 'rerank_score'
+            chat_history: Optional list of {'role': 'user'|'assistant', 'content': '...'}
+            
+        Returns:
+            Dict with 'response' and optionally 'thinking'
+        """
+        try:
+            # Build context from chunks with source attribution
+            context_parts = []
+            for i, chunk in enumerate(context_chunks):
+                score = chunk.get('rerank_score', chunk.get('similarity', 0))
+                context_parts.append(f"[Source {i+1}] (relevance: {score:.2f}):\n{chunk['content']}")
+            
+            context = "\n\n---\n\n".join(context_parts)
+            
+            # Build conversation history if provided
+            history_text = ""
+            if chat_history:
+                history_parts = []
+                for msg in chat_history[-5:]:  # Last 5 messages for context
+                    role = "User" if msg['role'] == 'user' else "Assistant"
+                    history_parts.append(f"{role}: {msg['content']}")
+                history_text = "\n".join(history_parts)
+                history_text = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+            
+            prompt = f"""You are a helpful research assistant with access to a knowledge base. Answer the user's question based on the provided context.
+
+CONTEXT FROM KNOWLEDGE BASE:
+{context}
+{history_text}
+USER QUESTION: {query}
+
+Instructions:
+- Answer based primarily on the provided context
+- If the context doesn't contain enough information, clearly state that
+- Cite sources when relevant using [Source N] notation
+- Be concise but comprehensive
+- If you need to reason through the answer, do so step by step"""
+
+            response = await self.async_client.generate(model=self.model, prompt=prompt)
+            
+            return {
+                "response": response["response"],
+                "model": self.model
+            }
+            
+        except Exception as e:
+            print(f"Error in chat_with_context_async: {e}")
+            return {
+                "response": f"I encountered an error while processing your question: {str(e)}",
+                "error": True
+            }
+
+    def chat_with_context(self, query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Synchronous wrapper for chat_with_context_async."""
+        return asyncio.run(self.chat_with_context_async(query, context_chunks, chat_history))

@@ -16,6 +16,7 @@ load_dotenv()
 
 st.set_page_config(page_title="Local-Brain Research Assistant", layout="wide")
 
+# --- Cached Resources ---
 @st.cache_resource
 def get_db_client():
     try:
@@ -31,54 +32,219 @@ def get_ai_engine():
 db = get_db_client()
 ai = get_ai_engine()
 
-st.title("Local-Brain, Cloud-Memory Research Assistant")
+# --- Session State Initialization ---
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "last_context" not in st.session_state:
+    st.session_state.last_context = []
+if "selected_project_id" not in st.session_state:
+    st.session_state.selected_project_id = None
+if "graph_nodes" not in st.session_state:
+    st.session_state.graph_nodes = []
+if "graph_edges" not in st.session_state:
+    st.session_state.graph_edges = []
 
-# Sidebar
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Project Management", "Ingestion", "Knowledge Explorer"])
+# --- Main Layout ---
+st.title("🧠 Local-Brain Research Assistant")
 
-# --- Project Management ---
-if page == "Project Management":
-    st.header("Project Management")
-    
-    with st.expander("Create New Project"):
-        new_project_name = st.text_input("Project Name")
-        if st.button("Create Project"):
-            if db and new_project_name:
-                res = db.create_project(new_project_name)
-                if res:
-                    st.success(f"Project '{new_project_name}' created!")
-                else:
-                    st.error("Failed to create project.")
-            elif not db:
-                st.error("Database not connected.")
-
-    st.subheader("Existing Projects")
-    if db:
-        projects = db.get_projects()
-        if projects:
-            for p in projects:
-                st.write(f"- **{p['name']}** (ID: `{p['id']}`)")
-        else:
-            st.info("No projects found.")
-
-# --- Ingestion ---
-elif page == "Ingestion":
-    st.header("Ingestion Pipeline")
+# --- Collapsible Project Sidebar ---
+with st.sidebar:
+    st.header("📁 Projects")
     
     if db:
         projects = db.get_projects()
-        project_options = {p['name']: p['id'] for p in projects}
         
-        if not project_options:
-            st.warning("Please create a project first.")
+        if projects:
+            project_names = [p['name'] for p in projects]
+            project_map = {p['name']: p['id'] for p in projects}
+            
+            # Find current index
+            current_idx = 0
+            if st.session_state.selected_project_id:
+                for i, p in enumerate(projects):
+                    if p['id'] == st.session_state.selected_project_id:
+                        current_idx = i
+                        break
+            
+            selected_name = st.selectbox(
+                "Select Project",
+                project_names,
+                index=current_idx,
+                key="project_selector"
+            )
+            
+            # Update session state if project changed
+            new_project_id = project_map[selected_name]
+            if new_project_id != st.session_state.selected_project_id:
+                st.session_state.selected_project_id = new_project_id
+                # Clear chat history when project changes
+                st.session_state.chat_history = []
+                st.session_state.last_context = []
+                st.session_state.graph_nodes = []
+                st.session_state.graph_edges = []
+                st.rerun()
+            
+            st.caption(f"ID: `{st.session_state.selected_project_id}`")
         else:
-            selected_project_name = st.selectbox("Select Project", list(project_options.keys()))
-            selected_project_id = project_options[selected_project_name]
+            st.info("No projects yet.")
+            st.session_state.selected_project_id = None
+        
+        # Create new project
+        with st.expander("➕ Create New Project"):
+            new_project_name = st.text_input("Project Name", key="new_project_input")
+            if st.button("Create", key="create_project_btn"):
+                if new_project_name:
+                    res = db.create_project(new_project_name)
+                    if res:
+                        st.success(f"Created '{new_project_name}'!")
+                        st.rerun()
+                    else:
+                        st.error("Failed to create project.")
+    else:
+        st.error("Database not connected.")
+
+# --- Main Content Area with Tabs ---
+if st.session_state.selected_project_id:
+    tab_chat, tab_ingest, tab_graph = st.tabs(["💬 Chat", "📥 Ingest Files", "🕸️ Knowledge Graph"])
+    
+    # ==================== CHAT TAB ====================
+    with tab_chat:
+        st.subheader("Chat with your Knowledge Base")
+        
+        # Two-column layout: Chat (70%) | Context Panel (30%)
+        chat_col, context_col = st.columns([7, 3])
+        
+        with chat_col:
+            # Chat settings
+            with st.expander("⚙️ Chat Settings", expanded=False):
+                do_rerank = st.checkbox("Enable Re-ranking", value=True, help="Uses FlashRank to improve context relevance")
+                top_k = st.slider("Number of context chunks", min_value=3, max_value=10, value=5)
             
-            uploaded_file = st.file_uploader("Upload Document or Code", type=['pdf', 'md', 'txt', 'py', 'docx'])
+            # Display chat history
+            chat_container = st.container()
+            with chat_container:
+                for msg in st.session_state.chat_history:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
             
-            if uploaded_file and st.button("Process & Ingest"):
+            # Chat input
+            if prompt := st.chat_input("Ask a question about your knowledge base..."):
+                # Add user message to history
+                st.session_state.chat_history.append({"role": "user", "content": prompt})
+                
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                
+                with st.chat_message("assistant"):
+                    with st.spinner("Searching knowledge base and generating response..."):
+                        # 1. Generate query embedding
+                        query_embedding = ai.generate_embedding(prompt)
+                        
+                        if query_embedding:
+                            # 2. Vector search
+                            results = db.search_vectors(
+                                query_embedding, 
+                                match_threshold=0.3, 
+                                project_id=st.session_state.selected_project_id,
+                                match_count=top_k * 2  # Get more for re-ranking
+                            )
+                            
+                            # 3. Re-rank if enabled
+                            if do_rerank and results:
+                                results = ai.rerank_results(prompt, results, top_k=top_k)
+                            else:
+                                results = results[:top_k]
+                            
+                            # Store context for display
+                            st.session_state.last_context = results
+                            
+                            # 4. Generate response with RAG
+                            if results:
+                                response = ai.chat_with_context(
+                                    prompt, 
+                                    results, 
+                                    st.session_state.chat_history[:-1]  # Exclude current message
+                                )
+                                assistant_message = response.get("response", "I couldn't generate a response.")
+                            else:
+                                assistant_message = "I couldn't find any relevant information in your knowledge base for this question."
+                        else:
+                            assistant_message = "Failed to process your question. Please try again."
+                            st.session_state.last_context = []
+                        
+                        st.markdown(assistant_message)
+                        st.session_state.chat_history.append({"role": "assistant", "content": assistant_message})
+            
+            # Clear chat button
+            if st.session_state.chat_history:
+                if st.button("🗑️ Clear Chat", key="clear_chat"):
+                    st.session_state.chat_history = []
+                    st.session_state.last_context = []
+                    st.rerun()
+        
+        with context_col:
+            st.markdown("### 📚 Retrieved Context")
+            
+            if st.session_state.last_context:
+                for i, chunk in enumerate(st.session_state.last_context):
+                    with st.expander(f"Source {i+1}", expanded=(i == 0)):
+                        # Show scores
+                        original_sim = chunk.get('similarity', 0)
+                        rerank_score = chunk.get('rerank_score')
+                        
+                        if rerank_score is not None:
+                            st.caption(f"Original: `{original_sim:.3f}` → Re-ranked: `{rerank_score:.3f}`")
+                        else:
+                            st.caption(f"Similarity: `{original_sim:.3f}`")
+                        
+                        st.markdown(chunk.get('content', '')[:500] + ("..." if len(chunk.get('content', '')) > 500 else ""))
+            else:
+                st.info("Ask a question to see which knowledge chunks are used.")
+    
+    # ==================== INGEST TAB ====================
+    with tab_ingest:
+        st.subheader("Ingest Documents & Code")
+        
+        # File browser
+        files_col, upload_col = st.columns([1, 1])
+        
+        with files_col:
+            st.markdown("### 📂 Current Files")
+            files = db.get_project_files(st.session_state.selected_project_id)
+            
+            if files:
+                for f in files:
+                    with st.expander(f"📄 {f['name']}"):
+                        st.write(f"**Summary:** {f['summary'][:200]}..." if f.get('summary') and len(f['summary']) > 200 else f.get('summary', 'No summary'))
+                        st.write(f"**Keywords:** {', '.join(f['metadata'].get('keywords', [])[:5])}")
+                        st.caption(f"Processed: {f['processed_at']}")
+                        
+                        # Related files
+                        related = db.get_related_files(f['id'])
+                        if related:
+                            st.write("**Related:**")
+                            for rf in related[:3]:
+                                st.caption(f"• {rf['name']} ({rf['shared_count']} shared)")
+                        
+                        if st.button("🗑️ Delete", key=f"del_{f['id']}"):
+                            if db.delete_file(f['id']):
+                                st.success("Deleted!")
+                                st.rerun()
+                            else:
+                                st.error("Delete failed.")
+            else:
+                st.info("No files ingested yet.")
+        
+        with upload_col:
+            st.markdown("### 📤 Upload New File")
+            
+            uploaded_file = st.file_uploader(
+                "Upload Document or Code", 
+                type=['pdf', 'md', 'txt', 'py', 'docx'],
+                key="file_uploader"
+            )
+            
+            if uploaded_file and st.button("🚀 Process & Ingest", key="ingest_btn"):
                 with st.spinner("Processing..."):
                     # Save to temp file
                     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp:
@@ -104,25 +270,14 @@ elif page == "Ingestion":
                         st.write(f"Parsed {len(chunks)} chunks.")
                         
                         # 3. AI Processing (Async & Parallel)
-                        st.text("Running AI Analysis (Summary, Graph, Embeddings) in parallel...")
+                        st.text("Running AI Analysis (Summary, Graph, Embeddings)...")
                         
                         full_text = "\n".join([c['content'] for c in chunks])
                         
                         async def run_ingestion_pipeline():
-                            # Create tasks
                             summary_task = ai.generate_summary_async(full_text)
                             graph_task = ai.extract_metadata_graph_async(full_text)
-                            
-                            # Embedding tasks
                             embedding_tasks = [ai.generate_embedding_async(c['content']) for c in chunks]
-                            
-                            # Execute all
-                            # We can gather summary and graph, and also gather embeddings
-                            
-                            # Let's group them:
-                            # 1. Summary
-                            # 2. Graph
-                            # 3. Embeddings (list of tasks)
                             
                             results = await asyncio.gather(
                                 summary_task,
@@ -130,38 +285,28 @@ elif page == "Ingestion":
                                 asyncio.gather(*embedding_tasks)
                             )
                             return results
-
-                        # Run the pipeline
+                        
                         summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
                         
                         # Assign embeddings back to chunks
                         for i, emb in enumerate(embeddings):
                             chunks[i]['embedding'] = emb
-
-                        st.write(f"Generated {len(embeddings)} embeddings.")
                         
+                        st.write(f"Generated {len(embeddings)} embeddings.")
                         st.text_area("Summary", summary, height=100)
                         
                         # Graph Data
                         nodes = graph_data.get('nodes', [])
                         edges = graph_data.get('edges', [])
-                        
                         st.write(f"Extracted {len(nodes)} nodes and {len(edges)} edges.")
                         
-                        # Backward compat: keywords = node names
                         keywords = [n['name'] for n in nodes]
-                        if not keywords:
-                             # Fallback or empty
-                             pass
                         
-                        st.write(f"Keywords (Nodes): {', '.join(keywords)}")
-
                         # 4. Storage
                         st.text("Storing data...")
                         
-                        # Store File Metadata first to get ID
                         file_meta = db.upload_file_metadata(
-                            project_id=selected_project_id,
+                            project_id=st.session_state.selected_project_id,
                             name=uploaded_file.name,
                             path=uploaded_file.name,
                             summary=summary,
@@ -170,17 +315,10 @@ elif page == "Ingestion":
                         
                         if file_meta:
                             file_id = file_meta['id']
-
-                            # Store chunks
                             db.store_chunks(file_id, chunks)
-                            
-                            # Store Keywords (Legacy/Compat)
                             db.store_keywords(file_id, keywords)
-                            
-                            # Store Graph Data
                             db.store_graph_data(file_id, nodes, edges)
-                            
-                            st.success("Ingestion Complete!")
+                            st.success("✅ Ingestion Complete!")
                         else:
                             st.error("Failed to upload file metadata.")
                             
@@ -191,172 +329,85 @@ elif page == "Ingestion":
                     finally:
                         if os.path.exists(tmp_path):
                             os.unlink(tmp_path)
-
-# --- Knowledge Explorer ---
-elif page == "Knowledge Explorer":
-    st.header("Knowledge Explorer")
     
-    if db:
-        projects = db.get_projects()
-        project_options = {p['name']: p['id'] for p in projects}
+    # ==================== KNOWLEDGE GRAPH TAB ====================
+    with tab_graph:
+        st.subheader("Knowledge Graph Explorer")
         
-        if project_options:
-            selected_project_name = st.selectbox("Select Project", list(project_options.keys()))
-            selected_project_id = project_options[selected_project_name]
-            
-            tab1, tab2, tab3 = st.tabs(["Browse Files", "Semantic Search", "Graph Explorer"])
-
-            with tab1:
-                st.subheader("Files")
-                files = db.get_project_files(selected_project_id)
-                if files:
-                    for f in files:
-                        with st.expander(f"{f['name']} ({f['processed_at']})"):
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                st.write(f"**Summary:** {f['summary']}")
-                                st.write(f"**Keywords:** {', '.join(f['metadata'].get('keywords', []))}")
-                                
-                                # Related Files
-                                related = db.get_related_files(f['id'])
-                                if related:
-                                    st.write("**Related Files:**")
-                                    for rf in related:
-                                        st.caption(f"- {rf['name']} (Shared Keywords: {rf['shared_count']})")
-                                else:
-                                    st.caption("No related files found.")
-
-                            with col2:
-                                if st.button("Delete File", key=f"del_{f['id']}"):
-                                    if db.delete_file(f['id']):
-                                        st.success("Deleted!")
-                                        st.rerun()
-                                    else:
-                                        st.error("Delete failed.")
-                else:
-                    st.info("No files in this project.")
-            
-            with tab2:
-                st.subheader("Semantic Search with Re-ranking")
-                query = st.text_input("Ask a question or search...")
-                do_rerank = st.checkbox("Enable Re-ranking (slower but more accurate)")
+        st.caption("Visualizing the global knowledge graph for your project.")
+        
+        if st.button("🔄 Load/Refresh Graph", key="load_graph_btn"):
+            with st.spinner("Loading graph data..."):
+                graph_data_rows = db.get_project_graph(st.session_state.selected_project_id, limit=500)
                 
-                if query and st.button("Search"):
-                    with st.spinner("Searching..."):
-                        query_embedding = ai.generate_embedding(query)
-                        if query_embedding:
-                            # 1. Vector Search
-                            results = db.search_vectors(query_embedding, match_threshold=0.3, project_id=selected_project_id)
-                            
-                            # 2. Re-ranking
-                            if do_rerank and results:
-                                with st.spinner("Re-ranking results with Qwen..."):
-                                    results = ai.rerank_results(query, results, top_k=5)
-                            
-                            # --- Hybrid Search Context ---
-                            if results:
-                                with st.expander("📚 Broaden Your Research (Graph Context)", expanded=True):
-                                    top_file_id = results[0].get('file_id')
-                                    if top_file_id:
-                                        col_g1, col_g2 = st.columns(2)
-                                        
-                                        with col_g1:
-                                            st.markdown("**Related Concepts (from Top Result):**")
-                                            graph_rows = db.get_file_graph(top_file_id)
-                                            concepts = set()
-                                            for row in graph_rows:
-                                                # Filter out Persons or strict types if available
-                                                if row.get('source_type') not in ['Person', 'Organization'] and row.get('target_type') not in ['Person', 'Organization']:
-                                                    concepts.add(row['source_name'])
-                                                    concepts.add(row['target_name'])
-                                            
-                                            if concepts:
-                                                st.info(", ".join(list(concepts)[:10]) + ("..." if len(concepts)>10 else ""))
-                                            else:
-                                                st.caption("No graph concepts found.")
-
-                                        with col_g2:
-                                            st.markdown("**Related Papers (via Graph):**")
-                                            related_files = db.get_related_files(top_file_id)
-                                            if related_files:
-                                                for rf in related_files:
-                                                    st.markdown(f"- **{rf['name']}** ({rf['shared_count']} shared concepts)")
-                                            else:
-                                                st.caption("No related papers found.")
-
-                            for res in results:
-                                score = res.get('rerank_score', res.get('similarity'))
-                                score_label = "Re-rank Score" if 'rerank_score' in res else "Sim"
-                                st.markdown(f"**Chunk from file {res.get('file_id')}** ({score_label}: {score:.2f})")
-                                st.markdown(f"> {res.get('content')}")
-                                st.divider()
-                        else:
-                            st.error("Failed to generate query embedding.")
-            
-            with tab3:
-                st.subheader("Graph Explorer")
+                nodes = []
+                edges = []
+                added_nodes = set()
                 
-                # Persistence logic using session state
-                if "graph_nodes" not in st.session_state:
-                    st.session_state.graph_nodes = []
-                if "graph_edges" not in st.session_state:
-                    st.session_state.graph_edges = []
-                
-                st.caption("Visualizing the Global Knowledge Graph for the entire project.")
-                
-                if st.button("Load/Refresh Graph"):
-                    with st.spinner("Loading Global Graph Data..."):
-                        # Always get Global Project Graph
-                        graph_data_rows = db.get_project_graph(selected_project_id, limit=500)
-                        
-                        # Process Data into Nodes/Edges
-                        nodes = []
-                        edges = []
-                        added_nodes = set()
-                        
-                        for row in graph_data_rows:
-                            s_name = row['source_name']
-                            t_name = row['target_name']
-                            s_type = row['source_type']
-                            t_type = row['target_type']
-                            relation = row['edge_type']
-                            
-                            # Simple logic for colors
-                            if s_name not in added_nodes:
-                                color = "#FF5733" if s_type == "Concept" else "#33C1FF"
-                                nodes.append(Node(id=s_name, label=s_name, size=20, color=color))
-                                added_nodes.add(s_name)
-                            
-                            if t_name not in added_nodes:
-                                color = "#FF5733" if t_type == "Concept" else "#33C1FF"
-                                nodes.append(Node(id=t_name, label=t_name, size=20, color=color))
-                                added_nodes.add(t_name)
-                                
-                            edges.append(Edge(source=s_name, target=t_name, label=relation))
-                        
-                        # Update Session State
-                        st.session_state.graph_nodes = nodes
-                        st.session_state.graph_edges = edges
-                
-                # Always render if data exists in session state
-                if st.session_state.graph_nodes:
-                    st.success(f"Visualizing {len(st.session_state.graph_nodes)} nodes and {len(st.session_state.graph_edges)} edges.")
+                for row in graph_data_rows:
+                    s_name = row['source_name']
+                    t_name = row['target_name']
+                    s_type = row['source_type']
+                    t_type = row['target_type']
+                    relation = row['edge_type']
                     
-                    config = AgraphConfig(
-                        width=800, 
-                        height=600, 
-                        directed=True, 
-                        nodeHighlightBehavior=True, 
-                        highlightColor="#F7A7A6",
-                        collapsible=True,
-                        physics=True
-                    )
+                    # Color by type
+                    type_colors = {
+                        "Concept": "#FF6B6B",
+                        "Tool": "#4ECDC4",
+                        "System": "#45B7D1",
+                        "Metric": "#96CEB4",
+                        "Person": "#DDA0DD",
+                    }
                     
-                    clicked_node = agraph(nodes=st.session_state.graph_nodes, edges=st.session_state.graph_edges, config=config)
+                    if s_name not in added_nodes:
+                        color = type_colors.get(s_type, "#95A5A6")
+                        nodes.append(Node(id=s_name, label=s_name, size=20, color=color))
+                        added_nodes.add(s_name)
                     
-                    if clicked_node:
-                        st.info(f"You clicked: {clicked_node}")
-                else:
-                    st.info("Click 'Load/Refresh Graph' to visualize the knowledge base.")
+                    if t_name not in added_nodes:
+                        color = type_colors.get(t_type, "#95A5A6")
+                        nodes.append(Node(id=t_name, label=t_name, size=20, color=color))
+                        added_nodes.add(t_name)
+                    
+                    edges.append(Edge(source=s_name, target=t_name, label=relation))
+                
+                st.session_state.graph_nodes = nodes
+                st.session_state.graph_edges = edges
+        
+        if st.session_state.graph_nodes:
+            st.success(f"Showing {len(st.session_state.graph_nodes)} nodes and {len(st.session_state.graph_edges)} edges.")
+            
+            # Legend
+            st.markdown("""
+            **Legend:** 
+            🔴 Concept | 
+            🔵 Tool | 
+            💙 System | 
+            💚 Metric | 
+            💜 Person
+            """)
+            
+            config = AgraphConfig(
+                width=900, 
+                height=600, 
+                directed=True, 
+                nodeHighlightBehavior=True, 
+                highlightColor="#F7A7A6",
+                collapsible=True,
+                physics=True
+            )
+            
+            clicked_node = agraph(
+                nodes=st.session_state.graph_nodes, 
+                edges=st.session_state.graph_edges, 
+                config=config
+            )
+            
+            if clicked_node:
+                st.info(f"Selected: **{clicked_node}**")
+        else:
+            st.info("Click 'Load/Refresh Graph' to visualize your knowledge base.")
 
-
+else:
+    st.info("👈 Please select or create a project from the sidebar to get started.")
