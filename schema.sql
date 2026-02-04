@@ -231,6 +231,41 @@ begin
 end;
 $$;
 
+-- Function to get the global graph for a project
+-- Returns all edges where at least one node is connected to a file in the project
+create or replace function get_project_graph(p_project_id uuid, p_limit int default 500)
+returns table (
+  source_name text,
+  target_name text,
+  edge_type text,
+  source_type text,
+  target_type text
+)
+language plpgsql
+as $$
+begin
+  return query
+  with project_files as (
+      select id from files where project_id = p_project_id
+  ),
+  project_nodes as (
+      select distinct node_id from files_nodes where file_id in (select id from project_files)
+  )
+  select
+    n1.name as source_name,
+    n2.name as target_name,
+    e.type as edge_type,
+    n1.type as source_type,
+    n2.type as target_type
+  from edges e
+  join nodes n1 on e.source_node_id = n1.id
+  join nodes n2 on e.target_node_id = n2.id
+  where e.source_node_id in (select node_id from project_nodes)
+     or e.target_node_id in (select node_id from project_nodes)
+  limit p_limit;
+end;
+$$;
+
 -- Function to store graph data (Batch Upsert)
 create or replace function store_graph_data(
   p_file_id uuid,

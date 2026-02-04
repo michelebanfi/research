@@ -295,47 +295,68 @@ elif page == "Knowledge Explorer":
             
             with tab3:
                 st.subheader("Graph Explorer")
-                files = db.get_project_files(selected_project_id)
-                if files:
-                    file_options = {f['name']: f['id'] for f in files}
-                    selected_file_name_graph = st.selectbox("Select File to Visualize", list(file_options.keys()))
+                
+                # Persistence logic using session state
+                if "graph_nodes" not in st.session_state:
+                    st.session_state.graph_nodes = []
+                if "graph_edges" not in st.session_state:
+                    st.session_state.graph_edges = []
+                
+                st.caption("Visualizing the Global Knowledge Graph for the entire project.")
+                
+                if st.button("Load/Refresh Graph"):
+                    with st.spinner("Loading Global Graph Data..."):
+                        # Always get Global Project Graph
+                        graph_data_rows = db.get_project_graph(selected_project_id, limit=500)
+                        
+                        # Process Data into Nodes/Edges
+                        nodes = []
+                        edges = []
+                        added_nodes = set()
+                        
+                        for row in graph_data_rows:
+                            s_name = row['source_name']
+                            t_name = row['target_name']
+                            s_type = row['source_type']
+                            t_type = row['target_type']
+                            relation = row['edge_type']
+                            
+                            # Simple logic for colors
+                            if s_name not in added_nodes:
+                                color = "#FF5733" if s_type == "Concept" else "#33C1FF"
+                                nodes.append(Node(id=s_name, label=s_name, size=20, color=color))
+                                added_nodes.add(s_name)
+                            
+                            if t_name not in added_nodes:
+                                color = "#FF5733" if t_type == "Concept" else "#33C1FF"
+                                nodes.append(Node(id=t_name, label=t_name, size=20, color=color))
+                                added_nodes.add(t_name)
+                                
+                            edges.append(Edge(source=s_name, target=t_name, label=relation))
+                        
+                        # Update Session State
+                        st.session_state.graph_nodes = nodes
+                        st.session_state.graph_edges = edges
+                
+                # Always render if data exists in session state
+                if st.session_state.graph_nodes:
+                    st.success(f"Visualizing {len(st.session_state.graph_nodes)} nodes and {len(st.session_state.graph_edges)} edges.")
                     
-                    if selected_file_name_graph and st.button("Visualize Graph"):
-                        selected_file_id = file_options[selected_file_name_graph]
-                        
-                        graph_data_rows = db.get_file_graph(selected_file_id)
-                        
-                        if graph_data_rows:
-                            nodes = []
-                            edges = []
-                            
-                            # We need to map node names to some ID, but names are unique per type?
-                            # DB query returns names.
-                            # Just use names as IDs for visualization to keep it simple
-                            
-                            added_nodes = set()
-                            
-                            for row in graph_data_rows:
-                                s_name = row['source_name']
-                                t_name = row['target_name']
-                                s_type = row['source_type']
-                                t_type = row['target_type']
-                                relation = row['edge_type']
-                                
-                                if s_name not in added_nodes:
-                                    nodes.append(Node(id=s_name, label=s_name, size=20, color="#FF5733" if s_type == "Concept" else "#33C1FF"))
-                                    added_nodes.add(s_name)
-                                
-                                if t_name not in added_nodes:
-                                    nodes.append(Node(id=t_name, label=t_name, size=20, color="#FF5733" if t_type == "Concept" else "#33C1FF"))
-                                    added_nodes.add(t_name)
-                                    
-                                edges.append(Edge(source=s_name, target=t_name, label=relation))
-                            
-                            config = AgraphConfig(width=700, height=500, directed=True, nodeHighlightBehavior=True, highlightColor="#F7A7A6", collapsible=True)
-                            
-                            return_value = agraph(nodes=nodes, edges=edges, config=config)
-                        else:
-                            st.info("No graph data found for this file. Try re-ingesting it.")
+                    config = AgraphConfig(
+                        width=800, 
+                        height=600, 
+                        directed=True, 
+                        nodeHighlightBehavior=True, 
+                        highlightColor="#F7A7A6",
+                        collapsible=True,
+                        physics=True
+                    )
+                    
+                    clicked_node = agraph(nodes=st.session_state.graph_nodes, edges=st.session_state.graph_edges, config=config)
+                    
+                    if clicked_node:
+                        st.info(f"You clicked: {clicked_node}")
+                else:
+                    st.info("Click 'Load/Refresh Graph' to visualize the knowledge base.")
 
 

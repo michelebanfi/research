@@ -154,6 +154,19 @@ class DatabaseClient:
             print(f"Error getting file graph: {e}")
             return []
 
+    def get_project_graph(self, project_id: str, limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        Retrieves the global graph for a project.
+        Returns list of edges with node properties.
+        """
+        try:
+            params = {"p_project_id": project_id, "p_limit": limit}
+            response = self.client.rpc("get_project_graph", params).execute()
+            return response.data
+        except Exception as e:
+            print(f"Error getting project graph: {e}")
+            return []
+
     def get_graph_traversal(self, start_node_id: str, max_depth: int = 2) -> List[Dict[str, Any]]:
         """
         Traverses graph from a start node.
