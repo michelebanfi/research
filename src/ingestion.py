@@ -183,9 +183,6 @@ class ASTParser:
                     class_name = node.name
                     
                     # 1. Capture Class Header / Docstring Context
-                    # We'll take the first few lines of the class (docstring/init) to give context
-                    # Or simpler: just "Class: {class_name}" plus docstring if available.
-                    
                     class_doc = ast.get_docstring(node)
                     class_context = f"Parent Class: {class_name}\n"
                     if class_doc:
@@ -205,7 +202,12 @@ class ASTParser:
                             "type": "method",
                             "name": method.name,
                             "parent_class": class_name,
-                            "metadata": {"parent_class": class_name, "context_added": True}
+                            "metadata": {
+                                "parent_class": class_name, 
+                                "context_added": True,
+                                "start_line": method.lineno,
+                                "end_line": method.end_lineno
+                            }
                         })
                         chunk_index += 1
                         
@@ -217,7 +219,11 @@ class ASTParser:
                             "chunk_index": chunk_index,
                             "type": "class",
                             "name": class_name,
-                            "metadata": {"is_class_def": True}
+                            "metadata": {
+                                "is_class_def": True,
+                                "start_line": node.lineno,
+                                "end_line": node.end_lineno
+                            }
                         })
                         chunk_index += 1
                         
@@ -228,7 +234,11 @@ class ASTParser:
                         "content": content,
                         "chunk_index": chunk_index,
                         "type": "function",
-                        "name": node.name
+                        "name": node.name,
+                        "metadata": {
+                            "start_line": node.lineno,
+                            "end_line": node.end_lineno
+                        }
                     })
                     chunk_index += 1
                 else:

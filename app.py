@@ -146,8 +146,6 @@ if st.session_state.selected_project_id:
                     with st.spinner("Thinking..."):
 
                         intent = asyncio.run(ai.determine_intent(prompt))
-                    
-                    print(intent)
 
                     if intent == "BROAD":
                         with st.spinner("Retrieving project overview..."):
@@ -306,6 +304,65 @@ if st.session_state.selected_project_id:
                             st.caption(f"Similarity: `{original_sim:.3f}`")
                         
                         st.markdown(chunk.get('content', '')[:500] + ("..." if len(chunk.get('content', '')) > 500 else ""))
+                        
+                        # REQ-VIS-04 / REQ-VIS-05: View Source Buttons
+                        file_path = chunk.get('file_path')
+                        metadata = chunk.get('metadata', {})
+                        
+                        if file_path:
+                            # Construct local static link (relative to static folder)
+                            # Assuming app serves from root, and file_path is absolute or relative
+                            # We stored 'static/uploads/filename' in database during ingestion below
+                            
+                            # Clean up path to be relative to 'static/' if needed
+                            if "static/" in file_path:
+                                relative_path = file_path.split("static/")[1]
+                            else:
+                                # Fallback: Check if file exists in static/uploads/
+                                possible_upload_path = Path("static/uploads") / file_path
+                                if possible_upload_path.exists():
+                                    relative_path = f"uploads/{file_path}"
+                                else:
+                                    relative_path = os.path.basename(file_path) 
+                                
+                            file_url = f"app/static/{relative_path}"
+                            
+                            # Layout buttons
+                            col1, col2 = st.columns([1, 1])
+                            
+                            # 1. View PDF
+                            if file_path.lower().endswith('.pdf'):
+                                page = metadata.get('page_number', 1)
+                                with col1:
+                                    st.link_button("📄 View PDF", f"{file_url}#page={page}")
+                                    
+                            # 2. View Code / Text
+                            elif file_path.lower().endswith(('.py', '.md', '.txt')):
+                                start_line = metadata.get('start_line')
+                                end_line = metadata.get('end_line')
+                                
+                                with col2:
+                                    if st.button("📝 View Code", key=f"view_{i}_{chunk.get('id')}"):
+                                        with st.dialog("Source Code", width="large"):
+                                            try:
+                                                with open(file_path, 'r') as f:
+                                                    lines = f.readlines()
+                                                    
+                                                # Highlight specific lines
+                                                if start_line and end_line:
+                                                    # Provide some context around lines
+                                                    ctx_start = max(0, start_line - 5)
+                                                    ctx_end = min(len(lines), end_line + 5)
+                                                    
+                                                    code_segment = "".join(lines[ctx_start:ctx_end])
+                                                    st.caption(f"Showing lines {ctx_start+1} - {ctx_end}")
+                                                    # Use emphasize_lines syntax if supported or just show block
+                                                    st.code(code_segment, language='python' if file_path.endswith('.py') else 'markdown')
+                                                else:
+                                                    st.code("".join(lines), language='python' if file_path.endswith('.py') else 'markdown')
+                                                    
+                                            except Exception as e:
+                                                st.error(f"Could not read file: {e}")
             else:
                 st.info("Ask a question to see which knowledge chunks are used.")
     
@@ -355,9 +412,15 @@ if st.session_state.selected_project_id:
             if uploaded_file and st.button("🚀 Process & Ingest", key="ingest_btn"):
                 with st.spinner("Processing..."):
                     # Save to temp file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp:
-                        tmp.write(uploaded_file.getvalue())
-                        tmp_path = tmp.name
+                    # REQ-VIS-02: Save to static/uploads
+                    upload_dir = Path("static/uploads")
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    file_path = upload_dir / uploaded_file.name
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.getvalue())
+                        
+                    tmp_path = str(file_path)
                     
                     try:
                         # 1. Route
@@ -466,7 +529,7 @@ if st.session_state.selected_project_id:
                         file_meta = db.upload_file_metadata(
                             project_id=st.session_state.selected_project_id,
                             name=uploaded_file.name,
-                            path=uploaded_file.name,
+                            path=str(file_path),
                             summary=summary,
                             metadata={"keywords": keywords}
                         )
@@ -484,9 +547,8 @@ if st.session_state.selected_project_id:
                         st.error(f"Error during ingestion: {e}")
                         import traceback
                         st.text(traceback.format_exc())
-                    finally:
-                        if os.path.exists(tmp_path):
-                            os.unlink(tmp_path)
+                    # allow file to persist in static/uploads
+
     
     # ==================== KNOWLEDGE GRAPH TAB ====================
     with tab_graph:

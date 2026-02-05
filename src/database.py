@@ -132,7 +132,35 @@ class DatabaseClient:
             "include_references": include_references  # Explicitly pass to avoid function overload ambiguity
         }
         res = self.client.rpc("match_file_chunks", params).execute()
-        return res.data
+        
+        # REQ-03: Post-process to add metadata and file path
+        # The RPC returns: id, file_id, content, similarity
+        # We need to fetch: metadata (from file_chunks) and path (from files)
+        results = res.data
+        if not results:
+            return []
+            
+        chunk_ids = [r['id'] for r in results]
+        file_ids = list(set([r['file_id'] for r in results]))
+        
+        # 1. Get Chunk Metadata (page numbers, line numbers, etc.)
+        chunks_meta = self.client.table("file_chunks").select("id, metadata").in_("id", chunk_ids).execute()
+        meta_map = {c['id']: c['metadata'] for c in chunks_meta.data}
+        
+        # 2. Get File Info (path, name)
+        files_info = self.client.table("files").select("id, path, name").in_("id", file_ids).execute()
+        file_map = {f['id']: f for f in files_info.data}
+        
+        # 3. Merge
+        for r in results:
+            r['metadata'] = meta_map.get(r['id'], {})
+            
+            f_info = file_map.get(r['file_id'])
+            if f_info:
+                r['file_path'] = f_info['path']
+                r['file_name'] = f_info['name']
+                
+        return results
 
     def store_graph_data(self, file_id: str, nodes: List[Dict[str, str]], edges: List[Dict[str, str]]):
         """
@@ -251,6 +279,20 @@ class DatabaseClient:
             # Add source info
             for chunk in chunks_response.data:
                 chunk['source'] = 'graph'  # Mark as graph-retrieved
+            
+            # REQ-03: Augment Graph Results with File Path
+            # (Metadata is already in chunks_response.data from select)
+            
+            chunk_file_ids = list(set([c['file_id'] for c in chunks_response.data]))
+            if chunk_file_ids:
+                files_info = self.client.table("files").select("id, path, name").in_("id", chunk_file_ids).execute()
+                file_map = {f['id']: f for f in files_info.data}
+                
+                for r in chunks_response.data:
+                    f_info = file_map.get(r['file_id'])
+                    if f_info:
+                        r['file_path'] = f_info['path']
+                        r['file_name'] = f_info['name']
             
             return chunks_response.data
         except Exception as e:
