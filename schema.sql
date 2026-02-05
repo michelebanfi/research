@@ -25,7 +25,9 @@ create table file_chunks (
   file_id uuid references files(id) on delete cascade not null,
   content text not null,
   chunk_index integer not null,
-  embedding vector(1024) -- Adjust dimension based on model (e.g., qwen3-embedding:0.6b is 1024)
+  embedding vector(1024), -- Your Ollama nomic-embed-text outputs 1024 dimensions
+  metadata jsonb default '{}'::jsonb, -- REQ-02: Granular metadata (page, section, is_table, is_reference, etc.)
+  is_reference boolean default false -- REQ-04: Flag for bibliography/reference sections
 );
 
 -- Keywords table
@@ -41,12 +43,13 @@ create table file_keywords (
   primary key (file_id, keyword_id)
 );
 
--- Function to match documents
+-- Function to match documents (excludes reference sections by default)
 create or replace function match_file_chunks (
   query_embedding vector(1024),
   match_threshold float,
   match_count int,
-  filter_project_id uuid
+  filter_project_id uuid,
+  include_references boolean default false
 )
 returns table (
   id uuid,
@@ -67,6 +70,7 @@ begin
   join files on files.id = file_chunks.file_id
   where 1 - (file_chunks.embedding <=> query_embedding) > match_threshold
   and files.project_id = filter_project_id
+  and (include_references = true or file_chunks.is_reference = false) -- REQ-04: Filter references
   order by file_chunks.embedding <=> query_embedding
   limit match_count;
 end;

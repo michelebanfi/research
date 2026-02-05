@@ -6,6 +6,10 @@ import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Fix event loop issues in Streamlit
+import nest_asyncio
+nest_asyncio.apply()
+
 from streamlit_agraph import agraph, Node, Edge, Config as AgraphConfig
 from src.database import DatabaseClient
 from src.ingestion import FileRouter, DoclingParser, ASTParser, FileType
@@ -43,6 +47,8 @@ if "graph_nodes" not in st.session_state:
     st.session_state.graph_nodes = []
 if "graph_edges" not in st.session_state:
     st.session_state.graph_edges = []
+if "matched_concepts" not in st.session_state:
+    st.session_state.matched_concepts = []  # REQ-01: GraphRAG matched concepts
 
 # --- Main Layout ---
 st.title("Local-Brain Research Assistant")
@@ -136,27 +142,90 @@ if st.session_state.selected_project_id:
                     st.markdown(prompt)
                 
                 with st.chat_message("assistant"):
-                    with st.spinner("Searching knowledge base and generating response..."):
+                    with st.spinner("Searching knowledge base (Vector + GraphRAG)..."):
                         # 1. Generate query embedding
                         query_embedding = ai.generate_embedding(prompt)
                         
                         if query_embedding:
-                            # 2. Vector search
-                            results = db.search_vectors(
+                            # 2. Vector search - get initial results
+                            vector_results = db.search_vectors(
                                 query_embedding, 
                                 match_threshold=0.3, 
                                 project_id=st.session_state.selected_project_id,
-                                match_count=top_k * 2  # Get more for re-ranking
+                                match_count=top_k * 2  # Get more for combining with graph
                             )
                             
-                            # 3. Re-rank if enabled
-                            if do_rerank and results:
-                                results = ai.rerank_results(prompt, results, top_k=top_k)
-                            else:
-                                results = results[:top_k]
+                            # Mark vector results with source
+                            for r in vector_results:
+                                r['source'] = 'vector'
                             
-                            # Store context for display
+                            # =============================================
+                            # REQ-01: GraphRAG - Augment with graph context
+                            # =============================================
+                            graph_results = []
+                            matched_concepts = []
+                            
+                            try:
+                                # Extract key terms from query (simple tokenization)
+                                import re
+                                query_terms = [w.lower() for w in re.findall(r'\b\w{3,}\b', prompt)]
+                                
+                                # Search for matching concepts in the knowledge graph
+                                if query_terms:
+                                    matching_nodes = db.search_nodes_by_name(
+                                        query_terms, 
+                                        st.session_state.selected_project_id,
+                                        limit=10
+                                    )
+                                    
+                                    if matching_nodes:
+                                        matched_concepts = [n['name'] for n in matching_nodes]
+                                        node_ids = [n['id'] for n in matching_nodes]
+                                        
+                                        # Also get related concepts (1-hop neighbors)
+                                        related_concepts = db.get_related_concepts(node_ids, max_hops=1)
+                                        if related_concepts:
+                                            node_ids.extend([n['id'] for n in related_concepts])
+                                            matched_concepts.extend([n['name'] for n in related_concepts[:5]])
+                                        
+                                        # Get chunks connected to these concepts
+                                        graph_results = db.get_chunks_by_concepts(
+                                            node_ids,
+                                            st.session_state.selected_project_id,
+                                            limit=top_k
+                                        )
+                            except Exception as e:
+                                print(f"GraphRAG error (non-fatal): {e}")
+                            
+                            # Combine results: vector + graph (deduplicated)
+                            seen_chunk_ids = set()
+                            combined_results = []
+                            
+                            # Add vector results first
+                            for r in vector_results:
+                                chunk_id = r.get('id')
+                                if chunk_id and chunk_id not in seen_chunk_ids:
+                                    seen_chunk_ids.add(chunk_id)
+                                    combined_results.append(r)
+                            
+                            # Add graph results that weren't in vector results
+                            for r in graph_results:
+                                chunk_id = r.get('id')
+                                if chunk_id and chunk_id not in seen_chunk_ids:
+                                    seen_chunk_ids.add(chunk_id)
+                                    # Graph results don't have similarity scores, assign a default
+                                    r['similarity'] = 0.5  # Neutral score for re-ranking
+                                    combined_results.append(r)
+                            
+                            # 3. Re-rank combined results if enabled
+                            if do_rerank and combined_results:
+                                results = ai.rerank_results(prompt, combined_results, top_k=top_k)
+                            else:
+                                results = combined_results[:top_k]
+                            
+                            # Store context for display (including graph info)
                             st.session_state.last_context = results
+                            st.session_state.matched_concepts = matched_concepts  # For display
                             
                             # 4. Generate response with RAG
                             if results:
@@ -171,6 +240,7 @@ if st.session_state.selected_project_id:
                         else:
                             assistant_message = "Failed to process your question. Please try again."
                             st.session_state.last_context = []
+                            st.session_state.matched_concepts = []
                         
                         st.markdown(assistant_message)
                         st.session_state.chat_history.append({"role": "assistant", "content": assistant_message})
@@ -185,12 +255,26 @@ if st.session_state.selected_project_id:
         with context_col:
             st.markdown("### 📚 Retrieved Context")
             
+            # REQ-01: Show matched graph concepts
+            if st.session_state.get('matched_concepts'):
+                with st.expander("🕸️ Graph-Matched Concepts", expanded=True):
+                    concepts = st.session_state.matched_concepts[:8]  # Limit display
+                    st.markdown(" • ".join([f"`{c}`" for c in concepts]))
+            
             if st.session_state.last_context:
                 for i, chunk in enumerate(st.session_state.last_context):
-                    with st.expander(f"Source {i+1}", expanded=(i == 0)):
-                        # Show scores
+                    # Determine source type
+                    source_type = chunk.get('source', 'vector')
+                    source_icon = "🔍" if source_type == 'vector' else "🕸️"
+                    
+                    with st.expander(f"{source_icon} Source {i+1}", expanded=(i == 0)):
+                        # Show scores and source
                         original_sim = chunk.get('similarity', 0)
                         rerank_score = chunk.get('rerank_score')
+                        
+                        # Source badge
+                        source_badge = "Vector Search" if source_type == 'vector' else "Graph Retrieval"
+                        st.caption(f"**{source_badge}**")
                         
                         if rerank_score is not None:
                             st.caption(f"Original: `{original_sim:.3f}` → Re-ranked: `{rerank_score:.3f}`")
@@ -274,25 +358,75 @@ if st.session_state.selected_project_id:
                         
                         full_text = "\n".join([c['content'] for c in chunks])
                         
+                        # Fix for event loop issues with Streamlit
+                        import nest_asyncio
+                        try:
+                            nest_asyncio.apply()
+                        except RuntimeError:
+                            pass  # Already applied
+                        
                         async def run_ingestion_pipeline():
-                            summary_task = ai.generate_summary_async(full_text)
-                            graph_task = ai.extract_metadata_graph_async(full_text)
-                            embedding_tasks = [ai.generate_embedding_async(c['content']) for c in chunks]
+                            # Create fresh async client to avoid closed loop issues
+                            import ollama
+                            async_client = ollama.AsyncClient()
                             
-                            results = await asyncio.gather(
-                                summary_task,
-                                graph_task,
-                                asyncio.gather(*embedding_tasks)
+                            async def safe_summary():
+                                try:
+                                    response = await async_client.generate(
+                                        model=ai.model, 
+                                        prompt=f"Summarize the following technical content concisely:\n\n{full_text[:4000]}"
+                                    )
+                                    return response["response"]
+                                except Exception as e:
+                                    print(f"Summary error: {e}")
+                                    return "Summary generation failed."
+                            
+                            async def safe_graph():
+                                try:
+                                    return await ai.extract_metadata_graph_async(full_text)
+                                except Exception as e:
+                                    print(f"Graph error: {e}")
+                                    return {"nodes": [], "edges": []}
+                            
+                            async def safe_embedding(text):
+                                try:
+                                    response = await async_client.embeddings(model=ai.embed_model, prompt=text)
+                                    return response["embedding"]
+                                except Exception as e:
+                                    print(f"Embedding error: {e}")
+                                    return []
+                            
+                            # Run all tasks
+                            summary_result = await safe_summary()
+                            graph_result = await safe_graph()
+                            embedding_results = await asyncio.gather(
+                                *[safe_embedding(c['content']) for c in chunks]
                             )
-                            return results
+                            
+                            return summary_result, graph_result, embedding_results
                         
-                        summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
+                        # Use existing event loop if available, else create new
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_closed():
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                            summary, graph_data, embeddings = loop.run_until_complete(run_ingestion_pipeline())
+                        except RuntimeError:
+                            # Fallback for when there's no event loop
+                            summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
                         
-                        # Assign embeddings back to chunks
+                        # Validate embeddings - filter out failed ones
+                        valid_chunks = []
                         for i, emb in enumerate(embeddings):
-                            chunks[i]['embedding'] = emb
+                            if emb and len(emb) > 0:
+                                chunks[i]['embedding'] = emb
+                                valid_chunks.append(chunks[i])
+                            else:
+                                st.warning(f"Chunk {i} had empty embedding, skipping.")
                         
-                        st.write(f"Generated {len(embeddings)} embeddings.")
+                        chunks = valid_chunks
+                        st.write(f"Generated {len(chunks)} valid embeddings.")
                         st.text_area("Summary", summary, height=100)
                         
                         # Graph Data

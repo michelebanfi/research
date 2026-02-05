@@ -72,15 +72,22 @@ class DatabaseClient:
         return res.data[0]
 
     def store_chunks(self, file_id: str, chunks: List[Dict[str, Any]]):
-        """Stores chunks for a file."""
+        """
+        Stores chunks for a file with metadata and reference flags.
+        REQ-02: Now includes metadata JSONB column.
+        REQ-04: Now includes is_reference flag.
+        """
         data_to_insert = []
         for chunk in chunks:
-            data_to_insert.append({
+            chunk_data = {
                 "file_id": file_id,
                 "content": chunk['content'],
                 "chunk_index": chunk['chunk_index'],
-                "embedding": chunk['embedding']
-            })
+                "embedding": chunk['embedding'],
+                "metadata": chunk.get('metadata', {}),
+                "is_reference": chunk.get('is_reference', False)
+            }
+            data_to_insert.append(chunk_data)
         self.client.table("file_chunks").insert(data_to_insert).execute()
 
     def store_keywords(self, file_id: str, keywords: List[str]):
@@ -115,13 +122,14 @@ class DatabaseClient:
             print(f"Error getting related files: {e}")
             return []
 
-    def search_vectors(self, query_embedding: List[float], match_threshold: float, project_id: str, match_count: int = 50):
+    def search_vectors(self, query_embedding: List[float], match_threshold: float, project_id: str, match_count: int = 50, include_references: bool = False):
         """Call the match_file_chunks RPC function."""
         params = {
             "query_embedding": query_embedding,
             "match_threshold": match_threshold,
             "match_count": match_count,
-            "filter_project_id": project_id
+            "filter_project_id": project_id,
+            "include_references": include_references  # Explicitly pass to avoid function overload ambiguity
         }
         res = self.client.rpc("match_file_chunks", params).execute()
         return res.data
@@ -180,4 +188,112 @@ class DatabaseClient:
             return response.data
         except Exception as e:
             print(f"Error traversing graph: {e}")
+            return []
+
+    # ==================== REQ-01: GraphRAG Methods ====================
+    
+    def search_nodes_by_name(self, query_terms: List[str], project_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        REQ-01: Search for nodes matching query terms.
+        Used to find concepts related to user query for GraphRAG.
+        """
+        try:
+            # Build OR conditions for ILIKE search
+            # We'll search for any node name containing any of the query terms
+            all_nodes = []
+            for term in query_terms:
+                if len(term) < 3:  # Skip very short terms
+                    continue
+                response = self.client.table("nodes").select(
+                    "id, name, type"
+                ).ilike("name", f"%{term}%").limit(limit).execute()
+                all_nodes.extend(response.data)
+            
+            # Deduplicate by node id
+            seen = set()
+            unique_nodes = []
+            for node in all_nodes:
+                if node['id'] not in seen:
+                    seen.add(node['id'])
+                    unique_nodes.append(node)
+            
+            return unique_nodes[:limit]
+        except Exception as e:
+            print(f"Error searching nodes: {e}")
+            return []
+    
+    def get_chunks_by_concepts(self, node_ids: List[str], project_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        REQ-01: Get file chunks connected to specific concept nodes.
+        Used for GraphRAG to retrieve chunks via graph relationships.
+        """
+        try:
+            if not node_ids:
+                return []
+            
+            # Get file_ids linked to these nodes
+            file_ids_response = self.client.table("files_nodes").select(
+                "file_id"
+            ).in_("node_id", node_ids).execute()
+            
+            file_ids = list(set([r['file_id'] for r in file_ids_response.data]))
+            
+            if not file_ids:
+                return []
+            
+            # Get chunks from those files (filtered by project)
+            chunks_response = self.client.table("file_chunks").select(
+                "id, file_id, content, metadata, is_reference"
+            ).in_("file_id", file_ids).eq(
+                "is_reference", False  # Exclude reference chunks
+            ).limit(limit).execute()
+            
+            # Add source info
+            for chunk in chunks_response.data:
+                chunk['source'] = 'graph'  # Mark as graph-retrieved
+            
+            return chunks_response.data
+        except Exception as e:
+            print(f"Error getting chunks by concepts: {e}")
+            return []
+    
+    def get_related_concepts(self, node_ids: List[str], max_hops: int = 1) -> List[Dict[str, Any]]:
+        """
+        REQ-01: Get concepts related to the given nodes via edges.
+        Expands the context for GraphRAG.
+        """
+        try:
+            if not node_ids:
+                return []
+            
+            related_nodes = []
+            
+            # Get edges where our nodes are source or target
+            edges_as_source = self.client.table("edges").select(
+                "target_node_id, type"
+            ).in_("source_node_id", node_ids).execute()
+            
+            edges_as_target = self.client.table("edges").select(
+                "source_node_id, type"
+            ).in_("target_node_id", node_ids).execute()
+            
+            # Collect related node ids
+            related_ids = set()
+            for edge in edges_as_source.data:
+                related_ids.add(edge['target_node_id'])
+            for edge in edges_as_target.data:
+                related_ids.add(edge['source_node_id'])
+            
+            # Remove original nodes
+            related_ids -= set(node_ids)
+            
+            if related_ids:
+                nodes_response = self.client.table("nodes").select(
+                    "id, name, type"
+                ).in_("id", list(related_ids)).execute()
+                related_nodes = nodes_response.data
+            
+            return related_nodes
+        except Exception as e:
+            print(f"Error getting related concepts: {e}")
             return []
