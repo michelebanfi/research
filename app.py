@@ -66,7 +66,7 @@ with st.sidebar:
             
             # Find current index
             current_idx = 0
-            if st.session_state.selected_project_id:
+            if st.session_state.get("selected_project_id"):
                 for i, p in enumerate(projects):
                     if p['id'] == st.session_state.selected_project_id:
                         current_idx = i
@@ -110,7 +110,7 @@ with st.sidebar:
         st.error("Database not connected.")
 
 # --- Main Content Area with Tabs ---
-if st.session_state.selected_project_id:
+if st.session_state.get("selected_project_id"):
     tab_chat, tab_ingest, tab_graph = st.tabs(["💬 Chat", "📥 Ingest Files", "🕸️ Knowledge Graph"])
     
     # ==================== CHAT TAB ====================
@@ -142,128 +142,56 @@ if st.session_state.selected_project_id:
                     st.markdown(prompt)
                 
                 with st.chat_message("assistant"):
-
-                    with st.spinner("Thinking..."):
-
-                        intent = asyncio.run(ai.determine_intent(prompt))
-
-                    if intent == "BROAD":
-                        with st.spinner("Retrieving project overview..."):
-                            st.caption("🔍 Detected intent: **Broad Overview** (Using File Summaries)")
-                            # TOOL USE: Fetch pre-computed summaries instead of vector search
-                            summaries_text = db.get_all_file_summaries(st.session_state.selected_project_id)
-                            
-                            # Package it to look like a chunk so existing chat function accepts it
-                            context_chunks = [{
-                                "content": summaries_text,
-                                "source": "database_summary",
-                                "similarity": 1.0
-                            }]
-                            
-                    else:
-                        with st.spinner("Searching knowledge base (Vector + GraphRAG)..."):
-                            # 1. Generate query embedding
-                            query_embedding = ai.generate_embedding(prompt)
+                    # REQ-UI-02: Status container for tool execution visibility
+                    status_container = st.status("🤔 Thinking...", expanded=True)
+                    
+                    # Track tool usage for status updates
+                    tools_used = []
+                    
+                    def update_status(tool_name: str, phase: str):
+                        """Callback for tool execution visibility."""
+                        if phase == "start":
+                            status_container.update(label=f"🔧 Using {tool_name}...")
+                            status_container.write(f"📍 Calling `{tool_name}`...")
+                        elif phase == "complete":
+                            status_container.write(f"✅ `{tool_name}` complete")
+                            tools_used.append(tool_name)
+                    
+                    try:
+                        # REQ-UI-01: Single agent.run() call replaces determine_intent + if/else
+                        from src.agent import ResearchAgent
                         
-                        if query_embedding:
-                            # 2. Vector search - get initial results
-                            vector_results = db.search_vectors(
-                                query_embedding, 
-                                match_threshold=0.3, 
-                                project_id=st.session_state.selected_project_id,
-                                match_count=top_k * 2  # Get more for combining with graph
-                            )
-                            
-                            # Mark vector results with source
-                            for r in vector_results:
-                                r['source'] = 'vector'
-                            
-                            # =============================================
-                            # REQ-01: GraphRAG - Augment with graph context
-                            # =============================================
-                            graph_results = []
-                            matched_concepts = []
-                            
-                            try:
-                                # Extract key terms from query (simple tokenization)
-                                import re
-                                query_terms = [w.lower() for w in re.findall(r'\b\w{3,}\b', prompt)]
-                                
-                                # Search for matching concepts in the knowledge graph
-                                if query_terms:
-                                    matching_nodes = db.search_nodes_by_name(
-                                        query_terms, 
-                                        st.session_state.selected_project_id,
-                                        limit=10
-                                    )
-                                    
-                                    if matching_nodes:
-                                        matched_concepts = [n['name'] for n in matching_nodes]
-                                        node_ids = [n['id'] for n in matching_nodes]
-                                        
-                                        # Also get related concepts (1-hop neighbors)
-                                        related_concepts = db.get_related_concepts(node_ids, max_hops=1)
-                                        if related_concepts:
-                                            node_ids.extend([n['id'] for n in related_concepts])
-                                            matched_concepts.extend([n['name'] for n in related_concepts[:5]])
-                                        
-                                        # Get chunks connected to these concepts
-                                        graph_results = db.get_chunks_by_concepts(
-                                            node_ids,
-                                            st.session_state.selected_project_id,
-                                            limit=top_k
-                                        )
-                            except Exception as e:
-                                print(f"GraphRAG error (non-fatal): {e}")
-                            
-                            # Combine results: vector + graph (deduplicated)
-                            seen_chunk_ids = set()
-                            combined_results = []
-                            
-                            # Add vector results first
-                            for r in vector_results:
-                                chunk_id = r.get('id')
-                                if chunk_id and chunk_id not in seen_chunk_ids:
-                                    seen_chunk_ids.add(chunk_id)
-                                    combined_results.append(r)
-                            
-                            # Add graph results that weren't in vector results
-                            for r in graph_results:
-                                chunk_id = r.get('id')
-                                if chunk_id and chunk_id not in seen_chunk_ids:
-                                    seen_chunk_ids.add(chunk_id)
-                                    # Graph results don't have similarity scores, assign a default
-                                    r['similarity'] = 0.5  # Neutral score for re-ranking
-                                    combined_results.append(r)
-                            
-                            # 3. Re-rank combined results if enabled
-                            if do_rerank and combined_results:
-                                results = ai.rerank_results(prompt, combined_results, top_k=top_k)
-                            else:
-                                results = combined_results[:top_k]
-                            
-                            # Store context for display (including graph info)
-                            st.session_state.last_context = results
-                            st.session_state.matched_concepts = matched_concepts  # For display
-
-                            context_chunks = results
-                        
-                        else:
-                            assistant_message = "Failed to process your question. Please try again."
-                            st.session_state.last_context = []
-                            st.session_state.matched_concepts = []
-                            
-                        # 4. Generate response with RAG
-                    if context_chunks:
-                        response = ai.chat_with_context(
-                            prompt, 
-                            context_chunks, 
-                            st.session_state.chat_history[:-1]  # Exclude current message
+                        agent = ResearchAgent(
+                            ai_engine=ai,
+                            database=db,
+                            project_id=st.session_state.selected_project_id,
+                            status_callback=update_status
                         )
-                        assistant_message = response.get("response", "I couldn't generate a response.")
-                    else:
-                        assistant_message = "I couldn't find any relevant information in your knowledge base for this question." 
                         
+                        # Run the agent
+                        result = asyncio.run(agent.run(
+                            prompt,
+                            st.session_state.chat_history[:-1]  # Exclude current message
+                        ))
+                        
+                        # Update status to complete
+                        if tools_used:
+                            status_container.update(label=f"✨ Done (used: {', '.join(tools_used)})", state="complete", expanded=False)
+                        else:
+                            status_container.update(label="✨ Done", state="complete", expanded=False)
+                        
+                        # Store context for display panel
+                        st.session_state.last_context = result.retrieved_chunks
+                        st.session_state.matched_concepts = result.matched_concepts
+                        
+                        assistant_message = result.answer
+                        
+                    except Exception as e:
+                        status_container.update(label="❌ Error", state="error")
+                        assistant_message = f"I encountered an error: {str(e)}"
+                        import traceback
+                        print(f"Agent error: {traceback.format_exc()}")
+                    
                     st.markdown(assistant_message)
                     st.session_state.chat_history.append({"role": "assistant", "content": assistant_message})
             
