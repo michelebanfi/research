@@ -142,9 +142,30 @@ if st.session_state.selected_project_id:
                     st.markdown(prompt)
                 
                 with st.chat_message("assistant"):
-                    with st.spinner("Searching knowledge base (Vector + GraphRAG)..."):
-                        # 1. Generate query embedding
-                        query_embedding = ai.generate_embedding(prompt)
+
+                    with st.spinner("Thinking..."):
+
+                        intent = asyncio.run(ai.determine_intent(prompt))
+                    
+                    print(intent)
+
+                    if intent == "BROAD":
+                        with st.spinner("Retrieving project overview..."):
+                            st.caption("🔍 Detected intent: **Broad Overview** (Using File Summaries)")
+                            # TOOL USE: Fetch pre-computed summaries instead of vector search
+                            summaries_text = db.get_all_file_summaries(st.session_state.selected_project_id)
+                            
+                            # Package it to look like a chunk so existing chat function accepts it
+                            context_chunks = [{
+                                "content": summaries_text,
+                                "source": "database_summary",
+                                "similarity": 1.0
+                            }]
+                            
+                    else:
+                        with st.spinner("Searching knowledge base (Vector + GraphRAG)..."):
+                            # 1. Generate query embedding
+                            query_embedding = ai.generate_embedding(prompt)
                         
                         if query_embedding:
                             # 2. Vector search - get initial results
@@ -226,24 +247,27 @@ if st.session_state.selected_project_id:
                             # Store context for display (including graph info)
                             st.session_state.last_context = results
                             st.session_state.matched_concepts = matched_concepts  # For display
-                            
-                            # 4. Generate response with RAG
-                            if results:
-                                response = ai.chat_with_context(
-                                    prompt, 
-                                    results, 
-                                    st.session_state.chat_history[:-1]  # Exclude current message
-                                )
-                                assistant_message = response.get("response", "I couldn't generate a response.")
-                            else:
-                                assistant_message = "I couldn't find any relevant information in your knowledge base for this question."
+
+                            context_chunks = results
+                        
                         else:
                             assistant_message = "Failed to process your question. Please try again."
                             st.session_state.last_context = []
                             st.session_state.matched_concepts = []
+                            
+                        # 4. Generate response with RAG
+                    if context_chunks:
+                        response = ai.chat_with_context(
+                            prompt, 
+                            context_chunks, 
+                            st.session_state.chat_history[:-1]  # Exclude current message
+                        )
+                        assistant_message = response.get("response", "I couldn't generate a response.")
+                    else:
+                        assistant_message = "I couldn't find any relevant information in your knowledge base for this question." 
                         
-                        st.markdown(assistant_message)
-                        st.session_state.chat_history.append({"role": "assistant", "content": assistant_message})
+                    st.markdown(assistant_message)
+                    st.session_state.chat_history.append({"role": "assistant", "content": assistant_message})
             
             # Clear chat button
             if st.session_state.chat_history:

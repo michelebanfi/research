@@ -297,3 +297,27 @@ class DatabaseClient:
         except Exception as e:
             print(f"Error getting related concepts: {e}")
             return []
+
+    def get_all_file_summaries(self, project_id: str) -> str:
+        """
+        Tool: Retrieves the high-level summaries of all files in the project.
+        Useful for answering broad questions like 'What is this project about?'.
+        """
+        try:
+            # Fetch only name and summary columns
+            response = self.client.table("files").select("name, summary").eq("project_id", project_id).execute()
+            
+            if not response.data:
+                return "No files found in this project."
+                
+            # Format them into a single context string
+            context_parts = []
+            for f in response.data:
+                name = f.get('name', 'Unknown File')
+                summary = f.get('summary', 'No summary available.')
+                context_parts.append(f"File: {name}\nSummary: {summary}")
+                
+            return "\n\n".join(context_parts)
+        except Exception as e:
+            print(f"Error getting file summaries: {e}")
+            return ""

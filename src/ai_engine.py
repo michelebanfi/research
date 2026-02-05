@@ -409,3 +409,25 @@ Instructions:
     def chat_with_context(self, query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """Synchronous wrapper for chat_with_context_async."""
         return asyncio.run(self.chat_with_context_async(query, context_chunks, chat_history))
+
+    async def determine_intent(self, query: str) -> str:
+        """
+        Decides if the query requires a 'SPECIFIC' search or a 'BROAD' overview.
+        """
+        prompt = f"""
+        Analyze the following user query: "{query}"
+        
+        Classify it into one of two categories:
+        1. SPECIFIC: The user is asking for specific details, code definitions, specific facts, or concepts.
+        2. BROAD: The user is asking for a high-level summary, an overview of what files exist, or what the project does.
+        
+        Return ONLY the word 'SPECIFIC' or 'BROAD'.
+        """
+        try:
+            # Using a cheaper/faster model helps here if available, but your main model is fine
+            response = await self.async_client.generate(model=self.model, prompt=prompt)
+            intent = response["response"].strip().upper()
+            # Fallback to SPECIFIC if response is messy
+            return "BROAD" if "BROAD" in intent else "SPECIFIC"
+        except Exception:
+            return "SPECIFIC"
