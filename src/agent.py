@@ -7,8 +7,11 @@ compatible with Qwen and other models that don't have native function calling.
 
 import asyncio
 import re
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Union
 from dataclasses import dataclass, field
+
+from src.reasoning_agent import ReasoningAgent
+from src.models import ReasoningResponse
 
 
 @dataclass
@@ -135,18 +138,27 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
     async def run(
         self, 
         user_query: str, 
-        chat_history: Optional[List[Dict[str, str]]] = None
-    ) -> AgentResponse:
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        reasoning_mode: bool = False
+    ) -> Union[AgentResponse, ReasoningResponse]:
         """
         Run the agent loop to answer the user's query.
         
         Args:
             user_query: The user's question
             chat_history: Optional conversation history
+            reasoning_mode: If True, use Plan & Code loop (REQ-POETIQ-02)
             
         Returns:
-            AgentResponse with the answer and metadata
+            AgentResponse or ReasoningResponse with the answer and metadata
         """
+        # REQ-POETIQ-02: Reasoning Toggle
+        if reasoning_mode:
+            reasoning_agent = ReasoningAgent(
+                ai_engine=self.ai,
+                status_callback=self.status_callback
+            )
+            return await reasoning_agent.run(task=user_query)
         tools_used = []
         retrieved_chunks = []
         matched_concepts = []

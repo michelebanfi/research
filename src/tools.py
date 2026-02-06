@@ -5,8 +5,11 @@ Each tool is a callable that takes specific inputs and returns formatted strings
 for the LLM to use as observations.
 """
 
+import asyncio
 from typing import List, Dict, Any, Callable, Optional
 from dataclasses import dataclass
+
+from src.sandbox import run_code
 
 
 @dataclass
@@ -65,6 +68,12 @@ class ToolRegistry:
                 description="Get a high-level overview of all files and their summaries in the project. Use this for broad questions like 'What is this project about?' or 'Give me an overview'.",
                 parameters="None required",
                 execute=self._project_summary
+            ),
+            "python_interpreter": Tool(
+                name="python_interpreter",
+                description="Execute Python code and return the output. Use this to run computations, process data, or verify results. The code runs in an isolated environment with common libraries available (json, math, re, collections, itertools).",
+                parameters="code (string): Python code to execute",
+                execute=self._python_interpreter
             ),
         }
     
@@ -228,3 +237,33 @@ class ToolRegistry:
         except Exception as e:
             self._notify("project_summary", "complete")
             return f"Error getting project summary: {str(e)}"
+    
+    def _python_interpreter(self, code: str) -> str:
+        """
+        REQ-POETIQ-01: Python Interpreter Tool
+        
+        Executes Python code in a secure sandbox and returns the output.
+        """
+        self._notify("python_interpreter", "start")
+        
+        if not code or not code.strip():
+            self._notify("python_interpreter", "complete")
+            return "Error: No code provided to execute."
+        
+        try:
+            # Run code in sandbox (sync wrapper for async function)
+            success, output = asyncio.run(run_code(code, timeout_s=5.0))
+            
+            self._notify("python_interpreter", "complete")
+            
+            if success:
+                if output:
+                    return f"**Execution successful:**\n```\n{output}\n```"
+                else:
+                    return "**Execution successful** (no output)"
+            else:
+                return f"**Execution failed:**\n```\n{output}\n```"
+                
+        except Exception as e:
+            self._notify("python_interpreter", "complete")
+            return f"Error executing code: {str(e)}"

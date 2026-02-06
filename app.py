@@ -125,6 +125,11 @@ if st.session_state.get("selected_project_id"):
             with st.expander("⚙️ Chat Settings", expanded=False):
                 do_rerank = st.checkbox("Enable Re-ranking", value=True, help="Uses FlashRank to improve context relevance")
                 top_k = st.slider("Number of context chunks", min_value=3, max_value=10, value=5)
+                reasoning_mode = st.toggle(
+                    "🧠 Reasoning Mode", 
+                    value=False, 
+                    help="Enable Plan & Code mode: the model will plan, write code, execute it in a sandbox, and iterate on errors"
+                )
             
             # Display chat history
             chat_container = st.container()
@@ -171,7 +176,8 @@ if st.session_state.get("selected_project_id"):
                         # Run the agent
                         result = asyncio.run(agent.run(
                             prompt,
-                            st.session_state.chat_history[:-1]  # Exclude current message
+                            st.session_state.chat_history[:-1],  # Exclude current message
+                            reasoning_mode=reasoning_mode
                         ))
                         
                         # Update status to complete
@@ -180,11 +186,38 @@ if st.session_state.get("selected_project_id"):
                         else:
                             status_container.update(label="✨ Done", state="complete", expanded=False)
                         
-                        # Store context for display panel
-                        st.session_state.last_context = result.retrieved_chunks
-                        st.session_state.matched_concepts = result.matched_concepts
+                        # Check if it's a ReasoningResponse or AgentResponse
+                        from src.models import ReasoningResponse
                         
-                        assistant_message = result.answer
+                        if isinstance(result, ReasoningResponse):
+                            # Reasoning mode response
+                            if result.plan:
+                                with st.expander("📋 Plan", expanded=False):
+                                    st.markdown(f"**Goal:** {result.plan.goal}")
+                                    st.markdown(f"**Context needed:** {result.plan.context_needed}")
+                                    st.markdown(f"**Verification:** {result.plan.verification_logic}")
+                            
+                            # Show attempts
+                            if result.attempts:
+                                with st.expander(f"🔄 Code Attempts ({len(result.attempts)})", expanded=False):
+                                    for attempt in result.attempts:
+                                        status_icon = "✅" if attempt.success else "❌"
+                                        st.markdown(f"**Attempt {attempt.attempt_number}** {status_icon}")
+                                        st.code(attempt.code, language="python")
+                                        if attempt.output:
+                                            st.text(f"Output: {attempt.output[:500]}")
+                            
+                            # Final answer
+                            if result.success:
+                                assistant_message = f"**Result:**\n```\n{result.final_output}\n```"
+                            else:
+                                assistant_message = f"❌ {result.error}\n\nLast output:\n```\n{result.final_output or 'No output'}\n```"
+                        else:
+                            # Standard AgentResponse
+                            # Store context for display panel
+                            st.session_state.last_context = result.retrieved_chunks
+                            st.session_state.matched_concepts = result.matched_concepts
+                            assistant_message = result.answer
                         
                     except Exception as e:
                         status_container.update(label="❌ Error", state="error")
