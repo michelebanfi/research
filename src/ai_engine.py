@@ -1,9 +1,11 @@
 import os
+import json
 import ollama
 import asyncio
-from typing import List, Any
+import re
+from typing import List, Any, Dict
 from src.config import Config
-from typing import Dict
+
 
 class AIEngine:
     def __init__(self):
@@ -11,6 +13,32 @@ class AIEngine:
         self.embed_model = Config.OLLAMA_EMBED_MODEL
         self.client = ollama.Client()
         self.async_client = ollama.AsyncClient()
+        # REQ-IMP-03: Load synonyms dynamically from config file
+        self._load_synonyms()
+    
+    def _load_synonyms(self):
+        """
+        REQ-IMP-03: Load entity synonyms from external JSON config.
+        Allows runtime updates without code changes.
+        """
+        synonyms_path = os.path.join(os.path.dirname(__file__), '..', 'synonyms.json')
+        if os.path.exists(synonyms_path):
+            try:
+                with open(synonyms_path, 'r') as f:
+                    self.entity_synonyms = json.load(f)
+            except Exception as e:
+                print(f"Warning: Could not load synonyms.json: {e}")
+                self.entity_synonyms = self._get_default_synonyms()
+        else:
+            self.entity_synonyms = self._get_default_synonyms()
+    
+    def _get_default_synonyms(self) -> Dict[str, List[str]]:
+        """Fallback synonyms if config file is missing."""
+        return {
+            "large language model": ["llm", "llms"],
+            "machine learning": ["ml"],
+            "artificial intelligence": ["ai"],
+        }
 
     def generate_embedding(self, text: str) -> List[float]:
         """Generates embedding for a given text."""
@@ -29,6 +57,42 @@ class AIEngine:
         except Exception as e:
             print(f"Error generating embedding async: {e}")
             return []
+    
+    def _split_text_semantically(self, text: str, max_size: int) -> List[str]:
+        """
+        REQ-IMP-01: Split text on sentence boundaries, preserving complete sentences.
+        Prevents cutting words/sentences in half during summarization.
+        """
+        # Split on sentence-ending punctuation followed by whitespace
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        chunks = []
+        current_chunk = ""
+        
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) + 1 <= max_size:
+                current_chunk += (" " if current_chunk else "") + sentence
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                # Handle case where single sentence exceeds max_size
+                if len(sentence) > max_size:
+                    # Fall back to word-level splitting for very long sentences
+                    words = sentence.split()
+                    current_chunk = ""
+                    for word in words:
+                        if len(current_chunk) + len(word) + 1 <= max_size:
+                            current_chunk += (" " if current_chunk else "") + word
+                        else:
+                            if current_chunk:
+                                chunks.append(current_chunk.strip())
+                            current_chunk = word
+                else:
+                    current_chunk = sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks if chunks else [text]
 
     async def generate_summary_async(self, text: str) -> str:
         """Generates a technical summary of the text asynchronously. Uses map-reduce for long texts."""
@@ -40,8 +104,8 @@ class AIEngine:
                 response = await self.async_client.generate(model=self.model, prompt=prompt)
                 return response["response"]
             
-            # Map Step: Split and summarize chunks
-            chunks = [text[i:i+MAX_CHUNK_SIZE] for i in range(0, len(text), MAX_CHUNK_SIZE)]
+            # REQ-IMP-01: Use semantic splitting instead of rigid character slicing
+            chunks = self._split_text_semantically(text, MAX_CHUNK_SIZE)
             
             # Process chunks in parallel using asyncio.gather
             tasks = []
@@ -61,26 +125,13 @@ class AIEngine:
             print(f"Error generating summary async: {e}")
             return "Summary generation failed."
 
-    # Keep synchronous version for backward compatibility if needed, but we'll try to move to async
+    # Synchronous wrapper for generate_summary_async
     def generate_summary(self, text: str) -> str:
         """Synchronous wrapper for generate_summary_async."""
         return asyncio.run(self.generate_summary_async(text))
-
-    # REQ-06: Synonym dictionary for common entity variations
-    ENTITY_SYNONYMS = {
-        # Key = canonical form (lowercase), Value = list of synonyms
-        "large language model": ["llm", "llms", "large language models", "language model"],
-        "machine learning": ["ml", "machine-learning"],
-        "artificial intelligence": ["ai", "a.i."],
-        "natural language processing": ["nlp", "n.l.p."],
-        "convolutional neural network": ["cnn", "cnns", "convnet"],
-        "recurrent neural network": ["rnn", "rnns"],
-        "transformer": ["transformers", "transformer model", "transformer architecture"],
-        "retrieval augmented generation": ["rag"],
-        "knowledge graph": ["kg", "knowledge graphs"],
-        "graph neural network": ["gnn", "gnns"],
-        "deep learning": ["dl", "deep-learning"],
-    }
+    
+    # REQ-IMP-03: ENTITY_SYNONYMS now loaded dynamically from synonyms.json
+    # See __init__ and _load_synonyms()
     
     def _clean_json_string(self, json_str: str) -> str:
         """
@@ -167,12 +218,13 @@ class AIEngine:
     def _resolve_entity_synonyms(self, name: str) -> str:
         """
         REQ-06: Resolve common synonyms to canonical forms.
+        REQ-IMP-03: Now uses dynamically loaded synonyms.
         E.g., 'LLM' -> 'large language model'
         """
         name_lower = name.strip().lower()
         
         # Check if name matches any synonym
-        for canonical, synonyms in self.ENTITY_SYNONYMS.items():
+        for canonical, synonyms in self.entity_synonyms.items():
             if name_lower == canonical or name_lower in synonyms:
                 return canonical
         

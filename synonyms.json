@@ -1,0 +1,49 @@
+{
+    "large language model": [
+        "llm",
+        "llms",
+        "large language models",
+        "language model"
+    ],
+    "machine learning": [
+        "ml",
+        "machine-learning"
+    ],
+    "artificial intelligence": [
+        "ai",
+        "a.i."
+    ],
+    "natural language processing": [
+        "nlp",
+        "n.l.p."
+    ],
+    "convolutional neural network": [
+        "cnn",
+        "cnns",
+        "convnet"
+    ],
+    "recurrent neural network": [
+        "rnn",
+        "rnns"
+    ],
+    "transformer": [
+        "transformers",
+        "transformer model",
+        "transformer architecture"
+    ],
+    "retrieval augmented generation": [
+        "rag"
+    ],
+    "knowledge graph": [
+        "kg",
+        "knowledge graphs"
+    ],
+    "graph neural network": [
+        "gnn",
+        "gnns"
+    ],
+    "deep learning": [
+        "dl",
+        "deep-learning"
+    ]
+}

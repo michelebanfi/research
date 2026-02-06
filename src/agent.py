@@ -104,21 +104,45 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
 
     def _parse_action(self, response: str) -> Optional[tuple]:
         """
-        Parse the LLM response for an ACTION: tool_name(argument) pattern.
+        REQ-FIX-02: Parse the LLM response for an ACTION: tool_name(argument) pattern.
+        Uses balanced parentheses matching to handle arguments containing parens.
         
         Returns:
             Tuple of (tool_name, argument) or None if no action found
         """
-        # Match ACTION: tool_name(argument) or ACTION: tool_name()
-        pattern = r'ACTION:\s*(\w+)\(([^)]*)\)'
-        match = re.search(pattern, response, re.IGNORECASE)
+        import re
         
-        if match:
-            tool_name = match.group(1).lower().strip()
-            argument = match.group(2).strip().strip('"\'')
-            return (tool_name, argument)
+        # First, find ACTION: tool_name( pattern
+        action_start = re.search(r'ACTION:\s*(\w+)\(', response, re.IGNORECASE)
+        if not action_start:
+            return None
         
-        return None
+        tool_name = action_start.group(1).lower().strip()
+        start_idx = action_start.end()  # Position right after the opening (
+        
+        # REQ-FIX-02: Use balanced parentheses counter to find matching close paren
+        paren_count = 1
+        end_idx = start_idx
+        
+        while end_idx < len(response) and paren_count > 0:
+            char = response[end_idx]
+            if char == '(':
+                paren_count += 1
+            elif char == ')':
+                paren_count -= 1
+            end_idx += 1
+        
+        if paren_count != 0:
+            # Unbalanced parens - fallback to simple regex
+            pattern = r'ACTION:\s*(\w+)\((.*)\)'
+            match = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
+            if match:
+                return (match.group(1).lower().strip(), match.group(2).strip().strip('"').strip("'"))
+            return None
+        
+        # Extract argument (excluding the final closing paren)
+        argument = response[start_idx:end_idx-1].strip().strip('"').strip("'")
+        return (tool_name, argument)
     
     def _parse_final_answer(self, response: str) -> Optional[str]:
         """
@@ -207,8 +231,8 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
                     if tool:
                         tools_used.append(tool_name)
                         
-                        # Execute the tool
-                        observation = tool.execute(argument)
+                        # Execute the tool (REQ-FIX-01: await async tool)
+                        observation = await tool.execute(argument)
                         observations.append((tool_name, observation))
                         
                         # Extract chunks for context panel (from vector_search)

@@ -3,10 +3,11 @@ REQ-TOOL-01, REQ-TOOL-02, REQ-TOOL-03: Tool definitions for the Research Agent.
 
 Each tool is a callable that takes specific inputs and returns formatted strings
 for the LLM to use as observations.
+
+REQ-FIX-01: All tool execute methods are now async-native.
 """
 
-import asyncio
-from typing import List, Dict, Any, Callable, Optional
+from typing import List, Dict, Any, Callable, Optional, Awaitable
 from dataclasses import dataclass
 
 from src.sandbox import run_code
@@ -18,7 +19,7 @@ class Tool:
     name: str
     description: str
     parameters: str  # Human-readable parameter description
-    execute: Callable[..., str]
+    execute: Callable[..., Awaitable[str]]  # REQ-FIX-01: Async callable
 
 
 class ToolRegistry:
@@ -95,9 +96,10 @@ class ToolRegistry:
     
     # ==================== TOOL IMPLEMENTATIONS ====================
     
-    def _vector_search(self, query: str) -> str:
+    async def _vector_search(self, query: str) -> str:
         """
         REQ-TOOL-01: Vector Search Tool
+        REQ-FIX-01: Now async-native.
         
         Generates embedding for the query and searches for similar chunks.
         Returns formatted results with source information.
@@ -105,8 +107,8 @@ class ToolRegistry:
         self._notify("vector_search", "start")
         
         try:
-            # Generate embedding for the query
-            query_embedding = self.ai.generate_embedding(query)
+            # Generate embedding for the query (async)
+            query_embedding = await self.ai.generate_embedding_async(query)
             
             if not query_embedding:
                 self._notify("vector_search", "complete")
@@ -144,9 +146,11 @@ class ToolRegistry:
             self._notify("vector_search", "complete")
             return f"Error during vector search: {str(e)}"
     
-    def _graph_search(self, concepts: str) -> str:
+    async def _graph_search(self, concepts: str) -> str:
         """
         REQ-TOOL-02: Graph Search Tool
+        REQ-FIX-01: Now async-native.
+        REQ-IMP-04: Increased limits for denser graph retrieval.
         
         Searches for nodes matching the concept names, finds related concepts,
         and retrieves connected chunks.
@@ -165,7 +169,7 @@ class ToolRegistry:
             matching_nodes = self.db.search_nodes_by_name(
                 concept_list,
                 self.project_id,
-                limit=10
+                limit=20  # REQ-IMP-04: Increased from 10
             )
             
             if not matching_nodes:
@@ -177,17 +181,17 @@ class ToolRegistry:
             
             # Get 1-hop related concepts
             related_concepts = self.db.get_related_concepts(node_ids, max_hops=1)
-            related_names = [n['name'] for n in related_concepts[:10]] if related_concepts else []
+            related_names = [n['name'] for n in related_concepts[:15]] if related_concepts else []  # REQ-IMP-04: Increased
             
             # Expand node_ids with related concepts
             if related_concepts:
-                node_ids.extend([n['id'] for n in related_concepts[:5]])
+                node_ids.extend([n['id'] for n in related_concepts[:10]])  # REQ-IMP-04: Increased from 5
             
             # Get chunks connected to these concepts
             graph_chunks = self.db.get_chunks_by_concepts(
                 node_ids,
                 self.project_id,
-                limit=5
+                limit=20  # REQ-IMP-04: Increased from 5
             )
             
             # Format output
@@ -216,9 +220,10 @@ class ToolRegistry:
             self._notify("graph_search", "complete")
             return f"Error during graph search: {str(e)}"
     
-    def _project_summary(self, _: str = "") -> str:
+    async def _project_summary(self, _: str = "") -> str:
         """
         REQ-TOOL-03: Project Summary Tool
+        REQ-FIX-01: Now async-native.
         
         Retrieves all file summaries in the project for a high-level overview.
         """
@@ -238,9 +243,10 @@ class ToolRegistry:
             self._notify("project_summary", "complete")
             return f"Error getting project summary: {str(e)}"
     
-    def _python_interpreter(self, code: str) -> str:
+    async def _python_interpreter(self, code: str) -> str:
         """
         REQ-POETIQ-01: Python Interpreter Tool
+        REQ-FIX-01: Now async-native - no blocking asyncio.run().
         
         Executes Python code in a secure sandbox and returns the output.
         """
@@ -251,8 +257,8 @@ class ToolRegistry:
             return "Error: No code provided to execute."
         
         try:
-            # Run code in sandbox (sync wrapper for async function)
-            success, output = asyncio.run(run_code(code, timeout_s=5.0))
+            # REQ-FIX-01: Directly await async sandbox (no blocking asyncio.run)
+            success, output = await run_code(code, timeout_s=5.0)
             
             self._notify("python_interpreter", "complete")
             
