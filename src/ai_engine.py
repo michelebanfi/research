@@ -130,6 +130,59 @@ class AIEngine:
         """Synchronous wrapper for generate_summary_async."""
         return asyncio.run(self.generate_summary_async(text))
     
+    async def extract_key_claims_async(self, text: str, section_type: str = "abstract") -> List[str]:
+        """
+        REQ-NLP-01: Extract key claims from abstract/conclusion sections.
+        
+        Uses LLM to identify the main claims, findings, or contributions.
+        Returns list of bullet-point claims for metadata storage.
+        
+        Args:
+            text: The section text to analyze
+            section_type: Type of section ("abstract", "conclusion", "results")
+            
+        Returns:
+            List of extracted claim strings
+        """
+        if not text or len(text.strip()) < 50:
+            return []
+        
+        try:
+            prompt = f"""Extract 3-5 key claims or findings from this {section_type}:
+
+{text[:2000]}
+
+Return as a JSON array of concise claim strings. Each claim should be a single sentence.
+Example: ["This study proposes X", "Results show Y improves by Z%", "The approach outperforms baseline"]
+
+Return ONLY the JSON array, no other text."""
+
+            response = await self.async_client.generate(model=self.model, prompt=prompt)
+            content = response["response"]
+            
+            # Parse JSON array
+            clean_content = self._clean_json_string(content)
+            # Handle case where response is wrapped differently
+            if not clean_content.startswith("["):
+                import re
+                array_match = re.search(r'\[.*\]', clean_content, re.DOTALL)
+                if array_match:
+                    clean_content = array_match.group(0)
+                else:
+                    return []
+            
+            import json
+            claims = json.loads(clean_content)
+            
+            # Validate it's a list of strings
+            if isinstance(claims, list):
+                return [str(c).strip() for c in claims if c and str(c).strip()][:5]
+            return []
+            
+        except Exception as e:
+            print(f"Error extracting key claims: {e}")
+            return []
+    
     # REQ-IMP-03: ENTITY_SYNONYMS now loaded dynamically from synonyms.json
     # See __init__ and _load_synonyms()
     

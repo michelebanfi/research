@@ -78,6 +78,12 @@ class ToolRegistry:
                 parameters="code (string): Python code to execute",
                 execute=self._python_interpreter
             ),
+            "web_search": Tool(
+                name="web_search",
+                description="Search the web for fresh information, documentation, or topics not in the local knowledge base. Use when local search returns no or low-relevance results.",
+                parameters="query (string): The search query",
+                execute=self._web_search
+            ),
         }
     
     def get_tool(self, name: str) -> Optional[Tool]:
@@ -285,3 +291,53 @@ class ToolRegistry:
         except Exception as e:
             self._notify("python_interpreter", "complete")
             return f"Error executing code: {str(e)}"
+
+    async def _web_search(self, query: str) -> str:
+        """
+        REQ-TOOL-04: Web Search Tool
+        
+        Searches the web using DuckDuckGo for fresh information not in the knowledge base.
+        Returns top 5 results with titles, snippets, and URLs.
+        """
+        self._notify("web_search", "start")
+        
+        if not query or not query.strip():
+            self._notify("web_search", "complete")
+            return "Error: No search query provided."
+        
+        try:
+            from duckduckgo_search import DDGS
+            
+            results = []
+            with DDGS() as ddgs:
+                # Get up to 5 text results
+                for r in ddgs.text(query, max_results=5):
+                    results.append(r)
+            
+            if not results:
+                self._notify("web_search", "complete")
+                return f"No web results found for '{query}'."
+            
+            # Format results for LLM
+            output_parts = [f"**Web Search Results for '{query}':**\n"]
+            
+            for i, r in enumerate(results, 1):
+                title = r.get('title', 'No title')
+                body = r.get('body', '')[:300]  # Truncate snippets
+                url = r.get('href', '')
+                
+                output_parts.append(f"[{i}] **{title}**")
+                output_parts.append(f"   {body}")
+                output_parts.append(f"   URL: {url}")
+                output_parts.append("")
+            
+            self._notify("web_search", "complete")
+            return "\n".join(output_parts)
+            
+        except ImportError:
+            self._notify("web_search", "complete")
+            return "Error: duckduckgo-search package not installed. Run: pip install duckduckgo-search"
+        except Exception as e:
+            self._notify("web_search", "complete")
+            return f"Error during web search: {str(e)}"
+

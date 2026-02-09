@@ -363,3 +363,122 @@ class DatabaseClient:
         except Exception as e:
             print(f"Error getting file summaries: {e}")
             return ""
+
+    # ==================== REQ-DATA-02: Semantic Auto-Clustering ====================
+    
+    def run_semantic_clustering(self, project_id: str, min_cluster_size: int = 3) -> Dict[str, Any]:
+        """
+        REQ-DATA-02: Identifies dense node clusters and creates Topic nodes.
+        
+        Algorithm:
+        1. Fetch all edges for the project
+        2. Build adjacency counts per node
+        3. Identify nodes with high connectivity (potential cluster centers)
+        4. Group connected concepts into clusters
+        5. Create "Topic" nodes linking each cluster
+        
+        Args:
+            project_id: The project to cluster
+            min_cluster_size: Minimum nodes to form a cluster
+            
+        Returns:
+            Dict with 'topics_created' count and 'clusters' list
+        """
+        try:
+            # 1. Get all edges for the project
+            edges_data = self.get_project_graph(project_id, limit=1000)
+            
+            if not edges_data:
+                return {"topics_created": 0, "clusters": []}
+            
+            # 2. Build adjacency maps
+            from collections import defaultdict
+            adjacency = defaultdict(set)  # node_name -> set of connected node names
+            node_types = {}  # node_name -> type
+            
+            for edge in edges_data:
+                source = edge.get('source_name', '')
+                target = edge.get('target_name', '')
+                source_type = edge.get('source_type', 'Concept')
+                target_type = edge.get('target_type', 'Concept')
+                
+                if source and target:
+                    adjacency[source].add(target)
+                    adjacency[target].add(source)
+                    node_types[source] = source_type
+                    node_types[target] = target_type
+            
+            # 3. Find cluster centers (nodes with high connectivity)
+            cluster_centers = []
+            for node, neighbors in adjacency.items():
+                # Skip nodes that are already Topic type
+                if node_types.get(node) == 'Topic':
+                    continue
+                if len(neighbors) >= min_cluster_size:
+                    cluster_centers.append((node, len(neighbors), neighbors))
+            
+            # Sort by connectivity
+            cluster_centers.sort(key=lambda x: x[1], reverse=True)
+            
+            # 4. Create clusters (greedy approach - avoid overlapping)
+            used_nodes = set()
+            clusters = []
+            
+            for center, count, neighbors in cluster_centers:
+                if center in used_nodes:
+                    continue
+                    
+                # Get unused neighbors for this cluster
+                cluster_members = [n for n in neighbors if n not in used_nodes]
+                
+                if len(cluster_members) >= min_cluster_size - 1:  # -1 because center is also a member
+                    cluster = {
+                        "center": center,
+                        "members": [center] + cluster_members[:min_cluster_size * 2],  # Cap members
+                        "size": len(cluster_members) + 1
+                    }
+                    clusters.append(cluster)
+                    
+                    # Mark nodes as used
+                    used_nodes.add(center)
+                    for n in cluster_members[:min_cluster_size * 2]:
+                        used_nodes.add(n)
+            
+            # 5. Create Topic nodes for each cluster
+            topics_created = 0
+            for i, cluster in enumerate(clusters):
+                # Generate topic name from cluster members
+                topic_name = f"Topic: {cluster['center']}"
+                
+                # Create Topic node
+                topic_node = {"name": topic_name, "type": "Topic"}
+                
+                # Create edges from Topic to all cluster members
+                topic_edges = []
+                for member in cluster["members"]:
+                    topic_edges.append({
+                        "source": topic_name,
+                        "target": member,
+                        "relation": "groups",
+                        "source_type": "Topic",
+                        "target_type": node_types.get(member, "Concept")
+                    })
+                
+                # Store the topic node and edges (using first file in project as anchor)
+                files = self.get_project_files(project_id)
+                if files:
+                    file_id = files[0]['id']
+                    self.store_graph_data(file_id, [topic_node], topic_edges)
+                    topics_created += 1
+            
+            return {
+                "topics_created": topics_created,
+                "clusters": [
+                    {"name": c["center"], "size": c["size"], "members": c["members"][:5]}  # Limit for output
+                    for c in clusters
+                ]
+            }
+            
+        except Exception as e:
+            print(f"Error in semantic clustering: {e}")
+            return {"topics_created": 0, "clusters": [], "error": str(e)}

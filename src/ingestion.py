@@ -25,6 +25,7 @@ class DoclingParser:
     """
     Parses documents using Docling with enhanced metadata extraction.
     Implements REQ-02 (granular metadata), REQ-04 (bibliography filtering), REQ-07 (table handling).
+    REQ-NLP-01: Also detects Abstract/Conclusion sections for key claim extraction.
     """
     
     # REQ-04: Patterns to identify reference/bibliography sections
@@ -33,9 +34,32 @@ class DoclingParser:
         "literature cited", "sources", "endnotes", "footnotes"
     ]
     
+    # REQ-NLP-01: Patterns to identify sections for key claim extraction
+    KEY_CLAIM_SECTION_PATTERNS = {
+        "abstract": ["abstract", "summary", "overview"],
+        "conclusion": ["conclusion", "conclusions", "summary", "discussion", "findings"],
+        "results": ["results", "contributions", "main findings"]
+    }
+    
     def __init__(self):
         self.converter = DocumentConverter()
         self.chunker = HierarchicalChunker()
+    
+    def _detect_key_claim_section(self, metadata: Dict[str, Any]) -> str:
+        """
+        REQ-NLP-01: Detect if a chunk is from a section relevant for key claim extraction.
+        
+        Returns:
+            Section type ("abstract", "conclusion", "results") or empty string if not relevant.
+        """
+        headings = metadata.get("headings", [])
+        for heading in headings:
+            heading_lower = heading.lower() if isinstance(heading, str) else ""
+            for section_type, patterns in self.KEY_CLAIM_SECTION_PATTERNS.items():
+                for pattern in patterns:
+                    if pattern in heading_lower:
+                        return section_type
+        return ""
     
     def _is_reference_section(self, text: str, metadata: Dict[str, Any]) -> bool:
         """
@@ -134,6 +158,9 @@ class DoclingParser:
                 # REQ-07: Handle tables semantically
                 is_table = self._is_table_chunk(chunk)
                 
+                # REQ-NLP-01: Detect key claim sections (abstract, conclusion, results)
+                key_claim_section = self._detect_key_claim_section(metadata)
+                
                 chunk_data = {
                     "content": chunk.text,
                     "chunk_index": i,
@@ -141,6 +168,10 @@ class DoclingParser:
                     "is_reference": is_reference,
                     "is_table": is_table,
                 }
+                
+                # REQ-NLP-01: Mark section for key claim extraction
+                if key_claim_section:
+                    chunk_data["metadata"]["key_claim_section"] = key_claim_section
                 
                 # REQ-07: For tables, we'll also store a summary hint for embedding
                 if is_table:
@@ -158,9 +189,20 @@ class DoclingParser:
             return []
 
 class ASTParser:
-    def parse(self, file_path: str) -> List[Dict[str, Any]]:
+    """
+    REQ-INGEST-01: Code-Aware Graphing
+    
+    Parses Python code using AST to extract:
+    - Chunks: classes, methods, and functions as text segments
+    - Graph data: nodes (Class, Method, Function) and edges (contains, inherits, calls)
+    """
+    
+    def parse(self, file_path: str) -> Dict[str, Any]:
         """
         Parses Python code using AST to split by classes and methods granularly.
+        
+        Returns:
+            Dict with 'chunks' list and 'graph_data' dict containing nodes/edges.
         """
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -170,6 +212,10 @@ class ASTParser:
             chunks = []
             chunk_index = 0
             
+            # REQ-INGEST-01: Graph data structures
+            nodes = []  # {"name": ..., "type": "Class"|"Method"|"Function"}
+            edges = []  # {"source": ..., "target": ..., "relation": ..., "source_type": ..., "target_type": ...}
+            
             lines = source.splitlines(keepends=True)
             
             def get_segment(node):
@@ -177,10 +223,53 @@ class ASTParser:
                 if not hasattr(node, 'lineno') or not hasattr(node, 'end_lineno'):
                     return ""
                 return "".join(lines[node.lineno-1 : node.end_lineno])
+            
+            def extract_calls(node, caller_name: str, caller_type: str):
+                """Extract function/method calls from a node."""
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Call):
+                        # Get the called function name
+                        if isinstance(child.func, ast.Name):
+                            callee = child.func.id
+                            edges.append({
+                                "source": caller_name,
+                                "target": callee,
+                                "relation": "calls",
+                                "source_type": caller_type,
+                                "target_type": "Function"  # Assume function, may be class
+                            })
+                        elif isinstance(child.func, ast.Attribute):
+                            # Method call like self.foo() or obj.bar()
+                            callee = child.func.attr
+                            edges.append({
+                                "source": caller_name,
+                                "target": callee,
+                                "relation": "calls",
+                                "source_type": caller_type,
+                                "target_type": "Method"
+                            })
 
             for node in tree.body:
                 if isinstance(node, ast.ClassDef):
                     class_name = node.name
+                    
+                    # REQ-INGEST-01: Add Class node
+                    nodes.append({"name": class_name, "type": "Class"})
+                    
+                    # REQ-INGEST-01: Extract inheritance edges
+                    for base in node.bases:
+                        if isinstance(base, ast.Name):
+                            parent_class = base.id
+                            # Ensure parent class node exists
+                            if not any(n["name"] == parent_class and n["type"] == "Class" for n in nodes):
+                                nodes.append({"name": parent_class, "type": "Class"})
+                            edges.append({
+                                "source": class_name,
+                                "target": parent_class,
+                                "relation": "inherits",
+                                "source_type": "Class",
+                                "target_type": "Class"
+                            })
                     
                     # 1. Capture Class Header / Docstring Context
                     class_doc = ast.get_docstring(node)
@@ -192,15 +281,29 @@ class ASTParser:
                     methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
                     
                     for method in methods:
+                        method_name = method.name
                         method_content = get_segment(method)
                         # Prepend context
                         full_content = f"{class_context}\n{method_content}"
+                        
+                        # REQ-INGEST-01: Add Method node and contains edge
+                        nodes.append({"name": method_name, "type": "Method"})
+                        edges.append({
+                            "source": class_name,
+                            "target": method_name,
+                            "relation": "contains",
+                            "source_type": "Class",
+                            "target_type": "Method"
+                        })
+                        
+                        # Extract calls from this method
+                        extract_calls(method, method_name, "Method")
                         
                         chunks.append({
                             "content": full_content,
                             "chunk_index": chunk_index,
                             "type": "method",
-                            "name": method.name,
+                            "name": method_name,
                             "parent_class": class_name,
                             "metadata": {
                                 "parent_class": class_name, 
@@ -229,12 +332,20 @@ class ASTParser:
                         
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # Standalone function
+                    func_name = node.name
                     content = get_segment(node)
+                    
+                    # REQ-INGEST-01: Add Function node
+                    nodes.append({"name": func_name, "type": "Function"})
+                    
+                    # Extract calls from this function
+                    extract_calls(node, func_name, "Function")
+                    
                     chunks.append({
                         "content": content,
                         "chunk_index": chunk_index,
                         "type": "function",
-                        "name": node.name,
+                        "name": func_name,
                         "metadata": {
                             "start_line": node.lineno,
                             "end_line": node.end_lineno
@@ -245,9 +356,20 @@ class ASTParser:
                     # Imports, constants, globals
                     # Optionally group them?
                     pass
-                    
-            return chunks
+            
+            # REQ-INGEST-01: Return both chunks and graph data
+            return {
+                "chunks": chunks,
+                "graph_data": {
+                    "nodes": nodes,
+                    "edges": edges
+                }
+            }
 
         except Exception as e:
             print(f"Error parsing code {file_path}: {e}")
-            return []
+            return {
+                "chunks": [],
+                "graph_data": {"nodes": [], "edges": []}
+            }
+

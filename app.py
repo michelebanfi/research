@@ -391,9 +391,14 @@ if st.session_state.get("selected_project_id"):
                         
                         # 2. Parse
                         chunks = []
+                        code_graph_data = {"nodes": [], "edges": []}  # REQ-INGEST-01: For code files
+                        
                         if ftype == FileType.CODE:
                             parser = ASTParser()
-                            chunks = parser.parse(tmp_path)
+                            # REQ-INGEST-01: ASTParser now returns dict with chunks and graph_data
+                            parse_result = parser.parse(tmp_path)
+                            chunks = parse_result.get("chunks", [])
+                            code_graph_data = parse_result.get("graph_data", {"nodes": [], "edges": []})
                         elif ftype == FileType.DOCUMENT:
                             parser = DoclingParser()
                             chunks = parser.parse(tmp_path)
@@ -401,6 +406,58 @@ if st.session_state.get("selected_project_id"):
                             st.warning("Unsupported file type.")
                         
                         st.write(f"Parsed {len(chunks)} chunks.")
+                        
+                        # REQ-INGEST-01: Show code graph preview for Python files
+                        if ftype == FileType.CODE and code_graph_data["nodes"]:
+                            with st.expander("🔍 Code Structure Preview", expanded=True):
+                                classes = [n for n in code_graph_data["nodes"] if n["type"] == "Class"]
+                                methods = [n for n in code_graph_data["nodes"] if n["type"] == "Method"]
+                                functions = [n for n in code_graph_data["nodes"] if n["type"] == "Function"]
+                                
+                                st.markdown(f"**Classes:** {len(classes)} | **Methods:** {len(methods)} | **Functions:** {len(functions)}")
+                                
+                                # Show class hierarchy
+                                if classes:
+                                    st.markdown("📦 **Classes:**")
+                                    for c in classes[:10]:
+                                        # Find methods for this class
+                                        class_methods = [e for e in code_graph_data.get("edges", []) 
+                                                        if e.get("source") == c["name"] and e.get("relation") == "contains"]
+                                        method_names = [e["target"] for e in class_methods[:5]]
+                                        if method_names:
+                                            st.markdown(f"  - `{c['name']}` → {', '.join([f'`{m}`' for m in method_names])}")
+                                        else:
+                                            st.markdown(f"  - `{c['name']}`")
+                                
+                                # Show inheritance
+                                inherits = [e for e in code_graph_data.get("edges", []) if e.get("relation") == "inherits"]
+                                if inherits:
+                                    st.markdown("🔗 **Inheritance:**")
+                                    for e in inherits[:5]:
+                                        st.markdown(f"  - `{e['source']}` extends `{e['target']}`")
+                        
+                        # UI: Document parsing preview for PDFs/Docs
+                        elif ftype == FileType.DOCUMENT and chunks:
+                            with st.expander("📄 Document Preview", expanded=True):
+                                # Show section structure
+                                sections = set()
+                                for chunk in chunks:
+                                    headings = chunk.get("metadata", {}).get("headings", [])
+                                    for h in headings:
+                                        if h:
+                                            sections.add(h)
+                                
+                                if sections:
+                                    st.markdown("**Detected Sections:**")
+                                    st.markdown(" | ".join([f"`{s}`" for s in list(sections)[:10]]))
+                                
+                                # Show first chunk as sample
+                                st.markdown("---")
+                                st.markdown("**Sample Content (first chunk):**")
+                                sample = chunks[0].get("content", "")[:800]
+                                if len(chunks[0].get("content", "")) > 800:
+                                    sample += "..."
+                                st.markdown(sample)
                         
                         # 3. AI Processing (Async & Parallel)
                         st.text("Running AI Analysis (Summary, Graph, Embeddings)...")
@@ -479,8 +536,15 @@ if st.session_state.get("selected_project_id"):
                         st.text_area("Summary", summary, height=100)
                         
                         # Graph Data
+                        # REQ-INGEST-01: Merge code-extracted graph with AI-extracted graph
                         nodes = graph_data.get('nodes', [])
                         edges = graph_data.get('edges', [])
+                        
+                        # Add code structure nodes/edges (for Python files)
+                        if code_graph_data["nodes"]:
+                            nodes.extend(code_graph_data["nodes"])
+                            edges.extend(code_graph_data["edges"])
+                        
                         st.write(f"Extracted {len(nodes)} nodes and {len(edges)} edges.")
                         
                         keywords = [n['name'] for n in nodes]

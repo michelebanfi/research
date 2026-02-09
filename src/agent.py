@@ -291,6 +291,24 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                                 for c in chunks:
                                     c['source'] = 'vector'
                                 retrieved_chunks.extend(chunks)
+                            
+                            # REQ-AGENT-03: Autonomous web search fallback
+                            # Check if best relevance score is below threshold
+                            best_score = 0.0
+                            if chunks:
+                                best_score = max(
+                                    c.get('rerank_score', c.get('similarity', 0)) 
+                                    for c in chunks
+                                )
+                            
+                            if best_score < 0.3 and "web_search" not in tools_used:
+                                logger.log_step("auto_fallback", f"Low relevance ({best_score:.2f}), triggering web_search")
+                                web_tool = self.tools.get_tool("web_search")
+                                if web_tool:
+                                    web_result = await web_tool.execute(argument)
+                                    observations.append(("web_search", web_result))
+                                    tools_used.append("web_search")
+                                    observation += f"\n\n[AUTO-FALLBACK: Low local relevance, web search results:]\n{web_result}"
                         
                         elif tool_name == "graph_search":
                             # Parse concepts for UI display
