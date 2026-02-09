@@ -5,7 +5,7 @@ import asyncio
 import re
 import hashlib
 from functools import lru_cache
-from typing import List, Any, Dict, Tuple
+from typing import List, Any, Dict, Tuple, Optional
 from openai import OpenAI, AsyncOpenAI
 from src.config import Config
 
@@ -80,7 +80,7 @@ class AIEngine:
             del self._embedding_cache[first_key]
         self._embedding_cache[self._get_cache_key(text)] = embedding
     
-    def _get_cached_embedding(self, text: str) -> List[float] | None:
+    def _get_cached_embedding(self, text: str) -> Optional[List[float]]:
         """Retrieve a cached embedding if it exists."""
         return self._embedding_cache.get(self._get_cache_key(text))
 
