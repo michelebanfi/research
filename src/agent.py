@@ -7,11 +7,13 @@ compatible with Qwen and other models that don't have native function calling.
 
 import asyncio
 import re
+import time
 from typing import List, Dict, Any, Optional, Callable, Union
 from dataclasses import dataclass, field
 
 from src.reasoning_agent import ReasoningAgent
 from src.models import ReasoningResponse
+from src import chat_logger
 
 
 @dataclass
@@ -43,7 +45,8 @@ class ResearchAgent:
         ai_engine, 
         database, 
         project_id: str,
-        status_callback: Optional[Callable[[str, str], None]] = None
+        status_callback: Optional[Callable[[str, str], None]] = None,
+        do_rerank: bool = True
     ):
         """
         Initialize the Research Agent.
@@ -53,6 +56,7 @@ class ResearchAgent:
             database: DatabaseClient instance
             project_id: Current project ID
             status_callback: Optional callback(tool_name, phase) for UI updates
+            do_rerank: Whether to re-rank vector search results using FlashRank
         """
         self.ai = ai_engine
         self.db = database
@@ -61,46 +65,34 @@ class ResearchAgent:
         
         # Import here to avoid circular imports
         from src.tools import ToolRegistry
-        self.tools = ToolRegistry(database, ai_engine, project_id, status_callback)
+        self.tools = ToolRegistry(database, ai_engine, project_id, status_callback, do_rerank=do_rerank)
     
     def _get_system_prompt(self) -> str:
         """
         REQ-AGENT-02: Create system prompt with tool usage guidance.
-        Enhanced with explicit examples for smaller models.
+        Simplified for smaller models with very explicit instructions.
         """
         tool_descriptions = self.tools.get_tool_descriptions()
         
-        return f"""You are a research assistant. You MUST use tools to answer questions. Do NOT answer without using a tool first.
+        return f"""You are a research assistant with access to a knowledge base.
 
-AVAILABLE TOOLS:
+TOOLS:
 {tool_descriptions}
 
-RULES:
-1. You MUST call a tool before answering
-2. For "What is this project about?" -> use project_summary
-3. For specific code/concept questions -> use vector_search
-4. For concept relationships -> use graph_search
+TO USE A TOOL:
+ACTION: tool_name(your query here)
 
-FORMAT:
-To call a tool, write:
-ACTION: tool_name(argument)
+TO GIVE FINAL ANSWER:
+FINAL ANSWER: your complete answer here
 
-After seeing the result, write:
-FINAL ANSWER: your answer based on the tool result
+EXAMPLE:
+User: What is machine learning?
+ACTION: vector_search(machine learning definition)
 
-EXAMPLE 1:
 User: What is this project about?
 ACTION: project_summary()
 
-EXAMPLE 2:
-User: How does vector search work?
-ACTION: vector_search(vector search implementation)
-
-EXAMPLE 3:
-User: What concepts relate to embeddings?
-ACTION: graph_search(embeddings)
-
-NOW RESPOND TO THE USER. Start with ACTION:"""
+ALWAYS start by calling a tool. Write ACTION: now."""
 
     def _parse_action(self, response: str) -> Optional[tuple]:
         """
@@ -178,11 +170,37 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
         """
         # REQ-POETIQ-02: Reasoning Toggle
         if reasoning_mode:
+            # First, retrieve relevant context from knowledge base for the reasoning agent
+            context = ""
+            try:
+                query_embedding = self.ai.generate_embedding(user_query)
+                if query_embedding:
+                    chunks = self.db.search_vectors(
+                        query_embedding,
+                        match_threshold=0.3,
+                        project_id=self.project_id,
+                        match_count=5
+                    )
+                    if chunks:
+                        context_parts = [f"Document {i+1}: {c['content']}" for i, c in enumerate(chunks)]
+                        context = "\\n\\n".join(context_parts)
+            except Exception as e:
+                print(f"Could not retrieve context for reasoning: {e}")
+            
             reasoning_agent = ReasoningAgent(
                 ai_engine=self.ai,
                 status_callback=self.status_callback
             )
-            return await reasoning_agent.run(task=user_query)
+            return await reasoning_agent.run(task=user_query, context=context)
+        
+        # Start logging session for normal chat
+        logger = chat_logger.new_session()
+        logger.log_step("init", "Starting ResearchAgent (normal mode)", {
+            "query": user_query[:200],
+            "has_history": bool(chat_history),
+            "max_iterations": self.MAX_ITERATIONS
+        })
+        
         tools_used = []
         retrieved_chunks = []
         matched_concepts = []
@@ -201,20 +219,30 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
         system_prompt = self._get_system_prompt()
         conversation = f"{system_prompt}{history_text}\n\nUSER QUERY: {user_query}\n\nThink step by step. What tool(s) do you need to answer this question?"
         
+        logger.log_step("prompt", "Initial prompt built", {"prompt_length": len(conversation)})
+        
         observations = []
         
         for iteration in range(self.MAX_ITERATIONS):
             try:
+                logger.log_step("iteration", f"Starting iteration {iteration + 1}/{self.MAX_ITERATIONS}")
+                
                 # Call LLM
+                start_time = time.time()
                 response = await self.ai.async_client.generate(
                     model=self.ai.model,
                     prompt=conversation
                 )
                 llm_response = response["response"]
+                duration = time.time() - start_time
+                
+                logger.log_llm_call(conversation, llm_response, duration, self.ai.model)
                 
                 # Check for final answer
                 final_answer = self._parse_final_answer(llm_response)
                 if final_answer:
+                    logger.log_step("complete", "Final answer found", {"answer_length": len(final_answer)})
+                    logger.finish("success", final_answer[:200])
                     return AgentResponse(
                         answer=final_answer,
                         retrieved_chunks=retrieved_chunks,
@@ -226,14 +254,22 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
                 action = self._parse_action(llm_response)
                 if action:
                     tool_name, argument = action
+                    logger.log_step("action", f"Parsed action: {tool_name}", {"argument": argument[:100]})
                     tool = self.tools.get_tool(tool_name)
                     
                     if tool:
                         tools_used.append(tool_name)
                         
                         # Execute the tool (REQ-FIX-01: await async tool)
+                        tool_start = time.time()
                         observation = await tool.execute(argument)
+                        tool_duration = time.time() - tool_start
                         observations.append((tool_name, observation))
+                        
+                        logger.log_step("tool_result", f"Tool {tool_name} executed", {
+                            "duration_s": round(tool_duration, 2),
+                            "result_length": len(observation)
+                        })
                         
                         # Extract chunks for context panel (from vector_search)
                         if tool_name == "vector_search":
@@ -244,8 +280,14 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
                                     query_embedding,
                                     match_threshold=0.3,
                                     project_id=self.project_id,
-                                    match_count=5
+                                    match_count=10 if self.tools.do_rerank else 5
                                 )
+                                # Apply same re-ranking as the tool
+                                if self.tools.do_rerank and len(chunks) > 1:
+                                    try:
+                                        chunks = self.ai.rerank_results(argument, chunks, top_k=5)
+                                    except Exception as e:
+                                        print(f"Re-ranking for UI failed: {e}")
                                 for c in chunks:
                                     c['source'] = 'vector'
                                 retrieved_chunks.extend(chunks)
@@ -262,8 +304,10 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
                         conversation += f"\n\n{llm_response}\n\nOBSERVATION: Unknown tool '{tool_name}'. Available tools are: vector_search, graph_search, project_summary.\n\nPlease try again or provide FINAL ANSWER:"
                 else:
                     # No action found - nudge towards final answer
+                    logger.log_step("no_action", "No action parsed from response", {"response_preview": llm_response[:100]})
                     if "final" in llm_response.lower() or iteration >= self.MAX_ITERATIONS - 2:
                         # LLM might have just answered without the prefix
+                        logger.finish("success", llm_response[:200])
                         return AgentResponse(
                             answer=llm_response,
                             retrieved_chunks=retrieved_chunks,
@@ -274,15 +318,72 @@ NOW RESPOND TO THE USER. Start with ACTION:"""
                     conversation += f"\n\n{llm_response}\n\nRemember: Use ACTION: tool_name(argument) to call a tool, or FINAL ANSWER: to provide your response."
                     
             except Exception as e:
+                logger.log_error(f"Exception in iteration: {e}")
+                logger.finish("error", str(e))
                 return AgentResponse(
                     answer=f"I encountered an error while processing your question: {str(e)}",
                     error=str(e),
                     tools_used=tools_used
                 )
         
-        # Max iterations reached - return what we have
+        # Max iterations reached - use direct RAG as fallback
+        logger.log_step("fallback", "Max iterations reached, trying fallback")
+        if observations:
+            # We have some tool results, try to synthesize an answer
+            context_text = "\n\n".join([f"{name}: {obs}" for name, obs in observations])
+            try:
+                fallback_prompt = f"""Based on this information from my knowledge base:
+
+{context_text}
+
+Answer this question: {user_query}
+
+Provide a helpful, complete answer based on the information above."""
+                start_time = time.time()
+                response = await self.ai.async_client.generate(
+                    model=self.ai.model,
+                    prompt=fallback_prompt
+                )
+                duration = time.time() - start_time
+                logger.log_llm_call(fallback_prompt, response["response"], duration, self.ai.model)
+                logger.finish("success", "Fallback synthesis")
+                return AgentResponse(
+                    answer=response["response"],
+                    retrieved_chunks=retrieved_chunks,
+                    matched_concepts=matched_concepts,
+                    tools_used=tools_used
+                )
+            except Exception as e:
+                logger.log_error(f"Fallback synthesis failed: {e}")
+                pass
+        
+        # Final fallback - do a simple vector search and answer
+        try:
+            query_embedding = self.ai.generate_embedding(user_query)
+            if query_embedding:
+                chunks = self.db.search_vectors(
+                    query_embedding,
+                    match_threshold=0.3,
+                    project_id=self.project_id,
+                    match_count=5
+                )
+                if chunks:
+                    response = await self.ai.chat_with_context_async(
+                        query=user_query,
+                        context_chunks=chunks,
+                        chat_history=chat_history
+                    )
+                    return AgentResponse(
+                        answer=response["response"],
+                        retrieved_chunks=chunks,
+                        matched_concepts=matched_concepts,
+                        tools_used=["vector_search (fallback)"]
+                    )
+        except Exception as e:
+            pass
+        
         return AgentResponse(
-            answer="I wasn't able to complete the analysis within the allowed iterations. Please try rephrasing your question.",
+            answer="I wasn't able to find relevant information to answer your question. Please try rephrasing or asking about something in your knowledge base.",
             retrieved_chunks=retrieved_chunks,
             matched_concepts=matched_concepts,
             tools_used=tools_used,

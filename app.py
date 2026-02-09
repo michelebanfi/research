@@ -170,7 +170,8 @@ if st.session_state.get("selected_project_id"):
                             ai_engine=ai,
                             database=db,
                             project_id=st.session_state.selected_project_id,
-                            status_callback=update_status
+                            status_callback=update_status,
+                            do_rerank=do_rerank
                         )
                         
                         # Run the agent

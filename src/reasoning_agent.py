@@ -8,10 +8,12 @@ Implements the "Plan & Code" loop with:
 """
 
 import re
+import time
 from typing import Optional, List, Dict, Any, Callable
 
 from src.models import ReasoningPlan, CodeAttempt, ReasoningResponse
 from src.sandbox import run_code
+from src import chat_logger
 
 
 class ReasoningAgent:
@@ -63,16 +65,33 @@ class ReasoningAgent:
         """
         attempts: List[CodeAttempt] = []
         
+        # Start logging session
+        logger = chat_logger.new_session()
+        logger.log_step("init", "Starting reasoning agent", {
+            "task": task[:200],
+            "has_context": bool(context),
+            "max_retries": self.MAX_CODE_RETRIES
+        })
+        
         # Phase 1: Goal & Plan (REQ-POETIQ-03)
         self._notify("planning", "Generating plan...")
+        logger.log_step("planning", "Generating plan...")
+        
         plan = await self._generate_plan(task, context)
         
         if not plan:
+            logger.log_error("Failed to generate plan")
+            logger.finish("failed", "No plan generated")
             return ReasoningResponse(
                 success=False,
                 error="Failed to generate a plan for this task."
             )
         
+        logger.log_step("planning", f"Plan generated", {
+            "goal": plan.goal,
+            "context_needed": plan.context_needed,
+            "verification": plan.verification_logic
+        })
         self._notify("planning", f"Goal: {plan.goal}")
         
         # Phase 2: Iterative Coding Loop (REQ-POETIQ-04)
@@ -80,11 +99,13 @@ class ReasoningAgent:
         
         for attempt_num in range(1, self.MAX_CODE_RETRIES + 1):
             self._notify("coding", f"Attempt {attempt_num}/{self.MAX_CODE_RETRIES}")
+            logger.log_step("coding", f"Starting attempt {attempt_num}")
             
             # Generate code
             code = await self._generate_code(task, plan, feedback)
             
             if not code:
+                logger.log_error(f"Failed to generate code on attempt {attempt_num}")
                 attempts.append(CodeAttempt(
                     attempt_number=attempt_num,
                     code="",
@@ -94,9 +115,15 @@ class ReasoningAgent:
                 ))
                 continue
             
+            logger.log_step("coding", f"Code generated", {"code_length": len(code)})
+            
             # Execute in sandbox (1st execution)
             self._notify("executing", f"Running code (attempt {attempt_num})...")
+            start_time = time.time()
             success, output = await run_code(code, timeout_s=5.0)
+            exec_duration = time.time() - start_time
+            
+            logger.log_sandbox_execution(code, success, output, exec_duration)
             
             attempt = CodeAttempt(
                 attempt_number=attempt_num,
@@ -121,6 +148,7 @@ class ReasoningAgent:
                     
                     if ver_success:
                         self._notify("complete", "Task completed and verified!")
+                        logger.finish("success", output)
                         attempts.append(attempt)
                         return ReasoningResponse(
                             success=True,
@@ -141,6 +169,7 @@ class ReasoningAgent:
                     # Couldn't generate verification script, fall back to basic check
                     if self._basic_verify_output(output):
                         self._notify("complete", "Task completed (basic verification)!")
+                        logger.finish("success", output)
                         attempts.append(attempt)
                         return ReasoningResponse(
                             success=True,
@@ -159,6 +188,7 @@ class ReasoningAgent:
         
         # Max retries reached
         self._notify("failed", f"Failed after {self.MAX_CODE_RETRIES} attempts")
+        logger.finish("failed", f"Max retries ({self.MAX_CODE_RETRIES}) exceeded")
         
         return ReasoningResponse(
             success=False,
@@ -173,16 +203,30 @@ class ReasoningAgent:
         """
         REQ-POETIQ-03: Generate a plan before coding.
         
-        Prompts the LLM to define:
-        1. Context needed
-        2. Goal
-        3. Verification logic
+        If context is provided (from knowledge base), the plan focuses on analysis.
+        Otherwise, it focuses on computational Python code.
         """
-        prompt = f"""You are a coding assistant that solves problems using Python.
+        if context:
+            # Knowledge-based task with context from documents
+            prompt = f"""You are a helpful research assistant analyzing documents.
 
 TASK: {task}
 
-{f"CONTEXT: {context}" if context else ""}
+DOCUMENTS FROM KNOWLEDGE BASE:
+{context}
+
+Before answering, create a plan. Respond in this EXACT format:
+
+CONTEXT_NEEDED: [What specific information from the documents is relevant]
+GOAL: [Write Python code to extract and structure the answer from the documents]
+VERIFICATION: [How to verify the answer is correct, e.g., "Answer should summarize main topics"]
+
+Be concise and specific."""
+        else:
+            # Computational task with no context
+            prompt = f"""You are a coding assistant that solves problems using Python.
+
+TASK: {task}
 
 Before writing any code, you must create a plan. Respond in this EXACT format:
 
@@ -193,15 +237,22 @@ VERIFICATION: [How to verify the output is correct, e.g., "Output should be a nu
 Be concise and specific."""
 
         try:
+            start_time = time.time()
+            chat_logger.log_step("llm_call", "Calling LLM for plan generation", {"prompt_length": len(prompt)})
+            
             response = await self.ai.async_client.generate(
                 model=self.ai.model,
                 prompt=prompt
             )
             text = response.get("response", "")
             
+            duration = time.time() - start_time
+            chat_logger.log_llm_call(prompt, text, duration, self.ai.model)
+            
             return self._parse_plan(text)
             
         except Exception as e:
+            chat_logger.log_error(f"LLM call failed in _generate_plan: {e}")
             return None
     
     def _parse_plan(self, text: str) -> Optional[ReasoningPlan]:
@@ -250,11 +301,17 @@ REQUIREMENTS:
 Respond with ONLY Python code in a ```python``` block. No explanations."""
 
         try:
+            start_time = time.time()
+            chat_logger.log_step("llm_call", "Calling LLM for code generation", {"prompt_length": len(prompt)})
+            
             response = await self.ai.async_client.generate(
                 model=self.ai.model,
                 prompt=prompt
             )
             text = response.get("response", "")
+            
+            duration = time.time() - start_time
+            chat_logger.log_llm_call(prompt, text, duration, self.ai.model)
             
             # Extract code from markdown block
             code_match = re.search(r'```python\s*(.*?)```', text, re.DOTALL | re.IGNORECASE)
@@ -270,6 +327,7 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
             return text.strip() if text.strip() else None
             
         except Exception as e:
+            chat_logger.log_error(f"LLM call failed in _generate_code: {e}")
             return None
     
     async def _generate_verification_script(

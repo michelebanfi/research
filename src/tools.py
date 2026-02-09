@@ -28,7 +28,7 @@ class ToolRegistry:
     Requires db and ai_engine instances to be set before use.
     """
     
-    def __init__(self, database, ai_engine, project_id: str, status_callback: Optional[Callable] = None):
+    def __init__(self, database, ai_engine, project_id: str, status_callback: Optional[Callable] = None, do_rerank: bool = True):
         """
         Initialize the tool registry with dependencies.
         
@@ -37,11 +37,13 @@ class ToolRegistry:
             ai_engine: AIEngine instance  
             project_id: Current project ID for scoped queries
             status_callback: Optional callback(tool_name, phase) for UI updates
+            do_rerank: Whether to re-rank vector search results using FlashRank
         """
         self.db = database
         self.ai = ai_engine
         self.project_id = project_id
         self.status_callback = status_callback
+        self.do_rerank = do_rerank
         self._tools = self._create_tools()
     
     def _notify(self, tool_name: str, phase: str):
@@ -102,6 +104,7 @@ class ToolRegistry:
         REQ-FIX-01: Now async-native.
         
         Generates embedding for the query and searches for similar chunks.
+        Optionally re-ranks results using FlashRank for better relevance.
         Returns formatted results with source information.
         """
         self._notify("vector_search", "start")
@@ -119,22 +122,31 @@ class ToolRegistry:
                 query_embedding,
                 match_threshold=0.3,
                 project_id=self.project_id,
-                match_count=5
+                match_count=10 if self.do_rerank else 5  # Get more if re-ranking
             )
             
             if not results:
                 self._notify("vector_search", "complete")
                 return "No relevant results found in the knowledge base."
             
+            # Apply re-ranking if enabled
+            if self.do_rerank and len(results) > 1:
+                try:
+                    results = self.ai.rerank_results(query, results, top_k=5)
+                except Exception as e:
+                    print(f"Re-ranking failed (using original order): {e}")
+            
             # Format results
             output_parts = [f"Found {len(results)} relevant chunks:\n"]
             
             for i, chunk in enumerate(results, 1):
-                similarity = chunk.get('similarity', 0)
+                # Use rerank_score if available, else similarity
+                score = chunk.get('rerank_score', chunk.get('similarity', 0))
+                score_label = "relevance" if 'rerank_score' in chunk else "similarity"
                 content = chunk.get('content', '')[:500]  # Truncate for LLM context
                 file_path = chunk.get('file_path', 'Unknown source')
                 
-                output_parts.append(f"[Source {i}] (similarity: {similarity:.2f})")
+                output_parts.append(f"[Source {i}] ({score_label}: {score:.2f})")
                 output_parts.append(f"File: {file_path}")
                 output_parts.append(f"Content: {content}")
                 output_parts.append("---")
