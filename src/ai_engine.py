@@ -178,6 +178,8 @@ class AIEngine:
                 source: str
                 target: str
                 relation: str = "related_to"
+                source_type: str = "Concept"  # REQ-DATA-01: type for source node
+                target_type: str = "Concept"  # REQ-DATA-01: type for target node
                 
                 @validator('source', 'target', pre=True, always=True)
                 def clean_entity(cls, v):
@@ -325,6 +327,7 @@ If no merges needed, return: {{}}"""
         Returns a dict with 'nodes' and 'edges'.
         """
         try:
+            # REQ-DATA-01: Updated prompt to request source_type and target_type for edges
             prompt = (
                 "Analyze the following technical content and extract a Knowledge Graph.\n"
                 "Focus on TECHNICAL CONCEPTS, TOOLS, SYSTEMS, and ALGORITHMS.\n"
@@ -333,8 +336,9 @@ If no merges needed, return: {{}}"""
                 "Return ONLY a JSON object with this structure:\n"
                 "{\n"
                 '  "nodes": [{"name": "Entity Name", "type": "Concept|Tool|Metric|System|Person"}],\n'
-                '  "edges": [{"source": "Entity Name", "target": "Entity Name", "relation": "relationship_type"}]\n'
+                '  "edges": [{"source": "Entity Name", "target": "Entity Name", "relation": "relationship_type", "source_type": "type of source", "target_type": "type of target"}]\n'
                 "}\n"
+                "IMPORTANT: Include source_type and target_type in each edge to disambiguate entities with the same name.\n"
                 "Ensure the JSON is valid and contains no other text.\n\n"
                 f"{text[:4000]}"
             )
@@ -399,9 +403,24 @@ If no merges needed, return: {{}}"""
             print(f"Error re-ranking with FlashRank: {e}")
             return results[:top_k] # Fallback
 
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        REQ-STABILITY-01: Estimate token count for a text string.
+        
+        Uses a simple word-based estimation: ~1.3 tokens per word on average.
+        This is a conservative estimate that works for most English text.
+        """
+        if not text:
+            return 0
+        # Rough estimation: split by whitespace, multiply by factor
+        word_count = len(text.split())
+        return int(word_count * 1.3)
+
     async def chat_with_context_async(self, query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Generates a response using RAG (Retrieval Augmented Generation).
+        
+        REQ-STABILITY-01: Automatically truncates context and history if exceeding token limit.
         
         Args:
             query: The user's question
@@ -412,23 +431,64 @@ If no merges needed, return: {{}}"""
             Dict with 'response' and optionally 'thinking'
         """
         try:
-            # Build context from chunks with source attribution
+            # REQ-STABILITY-01: Get token limit from config
+            max_tokens = Config.MODEL_CONTEXT_LIMIT
+            
+            # Reserve tokens for system prompt, query, and response
+            system_prompt_tokens = 150  # Approximate tokens for instructions
+            query_tokens = self._estimate_tokens(query)
+            response_reserve = 500  # Save space for model response
+            available_tokens = max_tokens - system_prompt_tokens - query_tokens - response_reserve
+            
+            # Build context from chunks with source attribution, respecting token limit
             context_parts = []
+            context_tokens = 0
+            truncated_count = 0
+            
             for i, chunk in enumerate(context_chunks):
                 score = chunk.get('rerank_score', chunk.get('similarity', 0))
-                context_parts.append(f"[Source {i+1}] (relevance: {score:.2f}):\n{chunk['content']}")
+                chunk_text = f"[Source {i+1}] (relevance: {score:.2f}):\n{chunk['content']}"
+                chunk_tokens = self._estimate_tokens(chunk_text)
+                
+                # Check if adding this chunk would exceed limit
+                if context_tokens + chunk_tokens > available_tokens * 0.7:  # Use 70% for context
+                    truncated_count += 1
+                    continue
+                
+                context_parts.append(chunk_text)
+                context_tokens += chunk_tokens
+            
+            if truncated_count > 0:
+                print(f"REQ-STABILITY-01: Truncated {truncated_count} context chunks to fit token limit")
             
             context = "\n\n---\n\n".join(context_parts)
             
-            # Build conversation history if provided
+            # Build conversation history if provided, respecting remaining token budget
             history_text = ""
-            if chat_history:
+            remaining_tokens = available_tokens - context_tokens
+            
+            if chat_history and remaining_tokens > 100:
                 history_parts = []
-                for msg in chat_history[-5:]:  # Last 5 messages for context
+                history_tokens = 0
+                
+                # Process from most recent, keeping as many as fit
+                for msg in reversed(chat_history[-10:]):  # Consider last 10 messages
                     role = "User" if msg['role'] == 'user' else "Assistant"
-                    history_parts.append(f"{role}: {msg['content']}")
-                history_text = "\n".join(history_parts)
-                history_text = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+                    msg_text = f"{role}: {msg['content']}"
+                    msg_tokens = self._estimate_tokens(msg_text)
+                    
+                    if history_tokens + msg_tokens > remaining_tokens * 0.8:  # Use 80% of remaining
+                        break
+                    
+                    history_parts.insert(0, msg_text)  # Insert at beginning to maintain order
+                    history_tokens += msg_tokens
+                
+                if history_parts:
+                    history_text = "\n".join(history_parts)
+                    history_text = f"\n\nCONVERSATION HISTORY:\n{history_text}\n"
+                
+                if len(history_parts) < len(chat_history):
+                    print(f"REQ-STABILITY-01: Truncated chat history from {len(chat_history)} to {len(history_parts)} messages")
             
             prompt = f"""You are a helpful research assistant with access to a knowledge base. Answer the user's question based on the provided context.
 

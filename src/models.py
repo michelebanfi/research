@@ -31,6 +31,7 @@ class CodeAttempt:
     success: bool
     output: str
     error: Optional[str] = None
+    verification_output: Optional[str] = None  # REQ-POETIQ-06: Output from verification script
 
 
 @dataclass

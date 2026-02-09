@@ -270,54 +270,66 @@ begin
 end;
 $$;
 
--- Function to store graph data (Batch Upsert)
+-- REQ-DATA-01 + REQ-PERF-01: Bulk graph storage with type-aware entity resolution
+-- Uses set-based operations instead of iterative loops
 create or replace function store_graph_data(
   p_file_id uuid,
   p_nodes jsonb, -- Array of {name, type}
-  p_edges jsonb  -- Array of {source, target, type}
+  p_edges jsonb  -- Array of {source, target, relation, source_type, target_type}
 )
 returns void language plpgsql as $$
-declare
-  node_record jsonb;
-  edge_record jsonb;
-  src_id uuid;
-  tgt_id uuid;
 begin
-  -- 1. Insert Nodes and link to File
-  for node_record in select * from jsonb_array_elements(p_nodes)
-  loop
-    -- Upsert Node
-    with inserted_node as (
-      insert into nodes (name, type)
-      values (node_record->>'name', node_record->>'type')
-      on conflict (name, type) do update set properties = nodes.properties -- dummy update to return id if exists? No, need RETURNING
-      returning id
-    )
-    select id into src_id from inserted_node;
-    
-    -- If it existed, we need to fetch it
-    if src_id is null then
-      select id into src_id from nodes where name = node_record->>'name' and type = node_record->>'type';
-    end if;
+  -- 1. Bulk upsert all nodes using set-based operations
+  with node_data as (
+    select 
+      n->>'name' as name,
+      coalesce(n->>'type', 'Concept') as type
+    from jsonb_array_elements(p_nodes) as n
+    where n->>'name' is not null and trim(n->>'name') != ''
+  ),
+  inserted_nodes as (
+    insert into nodes (name, type)
+    select distinct name, type from node_data
+    on conflict (name, type) do nothing
+    returning id, name, type
+  ),
+  all_nodes as (
+    -- Combine newly inserted with existing nodes
+    select id, name, type from inserted_nodes
+    union
+    select n.id, n.name, n.type from nodes n
+    inner join node_data nd on n.name = nd.name and n.type = nd.type
+  )
+  -- 2. Bulk link nodes to file
+  insert into files_nodes (file_id, node_id)
+  select distinct p_file_id, an.id from all_nodes an
+  on conflict do nothing;
 
-    -- Link to File
-    insert into files_nodes (file_id, node_id)
-    values (p_file_id, src_id)
-    on conflict do nothing;
-  end loop;
-
-  -- 2. Insert Edges
-  -- Re-loop to find IDs (less efficient but safer given we need IDs)
-  for edge_record in select * from jsonb_array_elements(p_edges)
-  loop
-    select id into src_id from nodes where name = edge_record->>'source' limit 1;
-    select id into tgt_id from nodes where name = edge_record->>'target' limit 1;
-    
-    if src_id is not null and tgt_id is not null then
-      insert into edges (source_node_id, target_node_id, type)
-      values (src_id, tgt_id, edge_record->>'relation')
-      on conflict do nothing;
-    end if;
-  end loop;
+  -- 3. Bulk insert edges using type-aware resolution (REQ-DATA-01)
+  with edge_data as (
+    select
+      e->>'source' as source_name,
+      e->>'target' as target_name,
+      coalesce(e->>'relation', 'related_to') as relation,
+      coalesce(e->>'source_type', 'Concept') as source_type,
+      coalesce(e->>'target_type', 'Concept') as target_type
+    from jsonb_array_elements(p_edges) as e
+    where e->>'source' is not null and e->>'target' is not null
+  ),
+  resolved_edges as (
+    select
+      src.id as source_id,
+      tgt.id as target_id,
+      ed.relation
+    from edge_data ed
+    -- REQ-DATA-01: Resolve by BOTH name AND type
+    left join nodes src on src.name = ed.source_name and src.type = ed.source_type
+    left join nodes tgt on tgt.name = ed.target_name and tgt.type = ed.target_type
+    where src.id is not null and tgt.id is not null
+  )
+  insert into edges (source_node_id, target_node_id, type)
+  select distinct source_id, target_id, relation from resolved_edges
+  on conflict (source_node_id, target_node_id, type) do nothing;
 end;
 $$;
+

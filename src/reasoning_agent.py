@@ -1,10 +1,10 @@
 """
-REQ-POETIQ-02, REQ-POETIQ-03, REQ-POETIQ-04, REQ-POETIQ-05: Reasoning Agent
+REQ-POETIQ-02, REQ-POETIQ-03, REQ-POETIQ-04, REQ-POETIQ-05, REQ-POETIQ-06: Reasoning Agent
 
 Implements the "Plan & Code" loop with:
 - Goal & Plan phase before coding
 - Iterative coding loop with error feedback
-- Self-verification with assertions
+- Self-verification with executable assertions (REQ-POETIQ-06)
 """
 
 import re
@@ -20,6 +20,8 @@ class ReasoningAgent:
     
     REQ-POETIQ-02: When reasoning_mode=True, uses this specialized loop
     instead of standard ReAct.
+    
+    REQ-POETIQ-06: Uses executable Python assertion scripts for verification.
     """
     
     MAX_CODE_RETRIES = 5  # REQ-POETIQ-04
@@ -92,7 +94,7 @@ class ReasoningAgent:
                 ))
                 continue
             
-            # Execute in sandbox
+            # Execute in sandbox (1st execution)
             self._notify("executing", f"Running code (attempt {attempt_num})...")
             success, output = await run_code(code, timeout_s=5.0)
             
@@ -103,27 +105,57 @@ class ReasoningAgent:
                 output=output,
                 error=None if success else output
             )
-            attempts.append(attempt)
             
             if success:
-                # Phase 3: Self-Verification (REQ-POETIQ-05)
-                self._notify("verifying", "Verifying output...")
+                # REQ-POETIQ-06: Executable Verification (2nd execution)
+                self._notify("verifying", "Generating verification script...")
                 
-                if self._verify_output(output, plan.verification_logic):
-                    self._notify("complete", "Task completed successfully!")
-                    return ReasoningResponse(
-                        success=True,
-                        plan=plan,
-                        final_code=code,
-                        final_output=output,
-                        attempts=attempts
-                    )
+                verification_script = await self._generate_verification_script(
+                    output, plan.verification_logic
+                )
+                
+                if verification_script:
+                    self._notify("verifying", "Running verification assertions...")
+                    ver_success, ver_output = await run_code(verification_script, timeout_s=5.0)
+                    attempt.verification_output = ver_output
+                    
+                    if ver_success:
+                        self._notify("complete", "Task completed and verified!")
+                        attempts.append(attempt)
+                        return ReasoningResponse(
+                            success=True,
+                            plan=plan,
+                            final_code=code,
+                            final_output=output,
+                            attempts=attempts
+                        )
+                    else:
+                        # Verification script failed (AssertionError or other error)
+                        feedback = (
+                            f"Code executed successfully with output: {output}\n"
+                            f"But verification FAILED with error:\n{ver_output}\n"
+                            f"Expected: {plan.verification_logic}\n"
+                            f"Fix the code to pass verification."
+                        )
                 else:
-                    # Verification failed - try again
-                    feedback = f"Code executed but verification failed. Output: {output}\nExpected: {plan.verification_logic}\nPlease fix the code."
+                    # Couldn't generate verification script, fall back to basic check
+                    if self._basic_verify_output(output):
+                        self._notify("complete", "Task completed (basic verification)!")
+                        attempts.append(attempt)
+                        return ReasoningResponse(
+                            success=True,
+                            plan=plan,
+                            final_code=code,
+                            final_output=output,
+                            attempts=attempts
+                        )
+                    else:
+                        feedback = f"Output doesn't meet basic requirements: {output}"
             else:
                 # Execution failed - feed error back
                 feedback = f"Execution error:\n{output}\n\nPlease fix this error."
+            
+            attempts.append(attempt)
         
         # Max retries reached
         self._notify("failed", f"Failed after {self.MAX_CODE_RETRIES} attempts")
@@ -240,12 +272,61 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
         except Exception as e:
             return None
     
-    def _verify_output(self, output: str, verification_logic: str) -> bool:
+    async def _generate_verification_script(
+        self, 
+        output: str, 
+        verification_logic: str
+    ) -> Optional[str]:
         """
-        REQ-POETIQ-05: Verify the output meets the verification criteria.
+        REQ-POETIQ-06: Generate a Python assertion script to verify output.
         
-        Simple verification - checks if output exists.
-        More sophisticated checks could be added based on verification_logic.
+        The script should raise AssertionError if verification fails.
+        """
+        prompt = f"""Generate a Python script that verifies the following output matches the expected criteria.
+
+OUTPUT TO VERIFY:
+{output}
+
+VERIFICATION CRITERIA:
+{verification_logic}
+
+Write Python code that:
+1. Parses the output (it's provided as the string variable OUTPUT below)
+2. Uses assert statements to verify it meets the criteria
+3. If all assertions pass, print "VERIFICATION PASSED"
+4. If any assertion fails, it will raise AssertionError automatically
+
+Start with: OUTPUT = '''{output}'''
+
+Respond with ONLY Python code in a ```python``` block. No explanations."""
+
+        try:
+            response = await self.ai.async_client.generate(
+                model=self.ai.model,
+                prompt=prompt
+            )
+            text = response.get("response", "")
+            
+            # Extract code from markdown block
+            code_match = re.search(r'```python\s*(.*?)```', text, re.DOTALL | re.IGNORECASE)
+            if code_match:
+                return code_match.group(1).strip()
+            
+            # Try without markdown
+            code_match = re.search(r'```\s*(.*?)```', text, re.DOTALL)
+            if code_match:
+                return code_match.group(1).strip()
+            
+            return None
+            
+        except Exception as e:
+            return None
+    
+    def _basic_verify_output(self, output: str) -> bool:
+        """
+        Fallback verification when assertion script generation fails.
+        
+        Checks if output exists and doesn't contain obvious error indicators.
         """
         if not output:
             return False
@@ -256,8 +337,7 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
         
         for indicator in error_indicators:
             if indicator in output_lower:
-                # Check if it's part of the verification logic (expected)
-                if indicator not in verification_logic.lower():
-                    return False
+                return False
         
         return True
+
