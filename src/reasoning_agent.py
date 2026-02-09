@@ -240,11 +240,7 @@ Be concise and specific."""
             start_time = time.time()
             chat_logger.log_step("llm_call", "Calling LLM for plan generation", {"prompt_length": len(prompt)})
             
-            response = await self.ai.async_client.generate(
-                model=self.ai.model,
-                prompt=prompt
-            )
-            text = response.get("response", "")
+            text = await self.ai._openrouter_generate(prompt)
             
             duration = time.time() - start_time
             chat_logger.log_llm_call(prompt, text, duration, self.ai.model)
@@ -304,11 +300,7 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
             start_time = time.time()
             chat_logger.log_step("llm_call", "Calling LLM for code generation", {"prompt_length": len(prompt)})
             
-            response = await self.ai.async_client.generate(
-                model=self.ai.model,
-                prompt=prompt
-            )
-            text = response.get("response", "")
+            text = await self.ai._openrouter_generate(prompt)
             
             duration = time.time() - start_time
             chat_logger.log_llm_call(prompt, text, duration, self.ai.model)
@@ -359,11 +351,7 @@ Start with: OUTPUT = '''{output}'''
 Respond with ONLY Python code in a ```python``` block. No explanations."""
 
         try:
-            response = await self.ai.async_client.generate(
-                model=self.ai.model,
-                prompt=prompt
-            )
-            text = response.get("response", "")
+            text = await self.ai._openrouter_generate(prompt)
             
             # Extract code from markdown block
             code_match = re.search(r'```python\s*(.*?)```', text, re.DOTALL | re.IGNORECASE)

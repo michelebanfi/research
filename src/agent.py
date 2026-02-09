@@ -229,11 +229,7 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                 
                 # Call LLM
                 start_time = time.time()
-                response = await self.ai.async_client.generate(
-                    model=self.ai.model,
-                    prompt=conversation
-                )
-                llm_response = response["response"]
+                llm_response = await self.ai._openrouter_generate(conversation)
                 duration = time.time() - start_time
                 
                 logger.log_llm_call(conversation, llm_response, duration, self.ai.model)
@@ -358,15 +354,12 @@ Answer this question: {user_query}
 
 Provide a helpful, complete answer based on the information above."""
                 start_time = time.time()
-                response = await self.ai.async_client.generate(
-                    model=self.ai.model,
-                    prompt=fallback_prompt
-                )
+                fallback_response = await self.ai._openrouter_generate(fallback_prompt)
                 duration = time.time() - start_time
-                logger.log_llm_call(fallback_prompt, response["response"], duration, self.ai.model)
+                logger.log_llm_call(fallback_prompt, fallback_response, duration, self.ai.model)
                 logger.finish("success", "Fallback synthesis")
                 return AgentResponse(
-                    answer=response["response"],
+                    answer=fallback_response,
                     retrieved_chunks=retrieved_chunks,
                     matched_concepts=matched_concepts,
                     tools_used=tools_used

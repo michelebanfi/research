@@ -4,15 +4,26 @@ import ollama
 import asyncio
 import re
 from typing import List, Any, Dict
+from openai import OpenAI, AsyncOpenAI
 from src.config import Config
 
 
 class AIEngine:
     def __init__(self):
-        self.model = Config.OLLAMA_MODEL
+        # LLM via OpenRouter
+        self.model = Config.OPENROUTER_MODEL
+        self.openai_client = OpenAI(
+            base_url=Config.OPENROUTER_BASE_URL,
+            api_key=Config.OPENROUTER_KEY,
+        )
+        self.async_openai_client = AsyncOpenAI(
+            base_url=Config.OPENROUTER_BASE_URL,
+            api_key=Config.OPENROUTER_KEY,
+        )
+        # Embeddings still via Ollama
         self.embed_model = Config.OLLAMA_EMBED_MODEL
-        self.client = ollama.Client()
-        self.async_client = ollama.AsyncClient()
+        self.ollama_client = ollama.Client()
+        self.ollama_async_client = ollama.AsyncClient()
         # REQ-IMP-03: Load synonyms dynamically from config file
         self._load_synonyms()
     
@@ -41,18 +52,18 @@ class AIEngine:
         }
 
     def generate_embedding(self, text: str) -> List[float]:
-        """Generates embedding for a given text."""
+        """Generates embedding for a given text via Ollama."""
         try:
-            response = self.client.embeddings(model=self.embed_model, prompt=text)
+            response = self.ollama_client.embeddings(model=self.embed_model, prompt=text)
             return response["embedding"]
         except Exception as e:
             print(f"Error generating embedding: {e}")
             return []
 
     async def generate_embedding_async(self, text: str) -> List[float]:
-        """Generates embedding for a given text asynchronously."""
+        """Generates embedding for a given text asynchronously via Ollama."""
         try:
-            response = await self.async_client.embeddings(model=self.embed_model, prompt=text)
+            response = await self.ollama_async_client.embeddings(model=self.embed_model, prompt=text)
             return response["embedding"]
         except Exception as e:
             print(f"Error generating embedding async: {e}")
@@ -94,6 +105,22 @@ class AIEngine:
         
         return chunks if chunks else [text]
 
+    async def _openrouter_generate(self, prompt: str) -> str:
+        """Helper to call OpenRouter via OpenAI SDK."""
+        response = await self.async_openai_client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content or ""
+
+    def _openrouter_generate_sync(self, prompt: str) -> str:
+        """Synchronous helper to call OpenRouter via OpenAI SDK."""
+        response = self.openai_client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content or ""
+
     async def generate_summary_async(self, text: str) -> str:
         """Generates a technical summary of the text asynchronously. Uses map-reduce for long texts."""
         MAX_CHUNK_SIZE = 4000
@@ -101,8 +128,7 @@ class AIEngine:
         try:
             if len(text) <= MAX_CHUNK_SIZE:
                 prompt = f"Summarize the following technical content concisely:\n\n{text}"
-                response = await self.async_client.generate(model=self.model, prompt=prompt)
-                return response["response"]
+                return await self._openrouter_generate(prompt)
             
             # REQ-IMP-01: Use semantic splitting instead of rigid character slicing
             chunks = self._split_text_semantically(text, MAX_CHUNK_SIZE)
@@ -111,10 +137,10 @@ class AIEngine:
             tasks = []
             for chunk in chunks:
                 prompt = f"Summarize the following technical content concisely:\n\n{chunk}"
-                tasks.append(self.async_client.generate(model=self.model, prompt=prompt))
+                tasks.append(self._openrouter_generate(prompt))
             
             responses = await asyncio.gather(*tasks)
-            chunk_summaries = [r["response"] for r in responses]
+            chunk_summaries = responses  # Already strings from _openrouter_generate
             
             # Reduce Step: Summarize the combined summaries
             combined_summary = "\n\n".join(chunk_summaries)
@@ -157,8 +183,7 @@ Example: ["This study proposes X", "Results show Y improves by Z%", "The approac
 
 Return ONLY the JSON array, no other text."""
 
-            response = await self.async_client.generate(model=self.model, prompt=prompt)
-            content = response["response"]
+            content = await self._openrouter_generate(prompt)
             
             # Parse JSON array
             clean_content = self._clean_json_string(content)
@@ -318,11 +343,11 @@ Entities: {ambiguous[:20]}
 Return ONLY valid JSON like: {{"original1": "canonical1", "original2": "canonical1"}}
 If no merges needed, return: {{}}"""
                 
-                response = await self.async_client.generate(model=self.model, prompt=prompt)
+                content = await self._openrouter_generate(prompt)
                 
                 try:
                     import json
-                    llm_mappings = json.loads(self._clean_json_string(response["response"]))
+                    llm_mappings = json.loads(self._clean_json_string(content))
                     resolved.update(llm_mappings)
                 except:
                     pass  # LLM response wasn't valid JSON, skip
@@ -395,8 +420,7 @@ If no merges needed, return: {{}}"""
                 "Ensure the JSON is valid and contains no other text.\n\n"
                 f"{text[:4000]}"
             )
-            response = await self.async_client.generate(model=self.model, prompt=prompt)
-            content = response["response"]
+            content = await self._openrouter_generate(prompt)
             
             # REQ-05: Use Pydantic-based parsing for robust validation
             data = self._parse_graph_data_with_pydantic(content)
@@ -557,10 +581,10 @@ Instructions:
 - Be concise but comprehensive
 - If you need to reason through the answer, do so step by step"""
 
-            response = await self.async_client.generate(model=self.model, prompt=prompt)
+            response_text = await self._openrouter_generate(prompt)
             
             return {
-                "response": response["response"],
+                "response": response_text,
                 "model": self.model
             }
             
@@ -590,8 +614,8 @@ Instructions:
         """
         try:
             # Using a cheaper/faster model helps here if available, but your main model is fine
-            response = await self.async_client.generate(model=self.model, prompt=prompt)
-            intent = response["response"].strip().upper()
+            response_text = await self._openrouter_generate(prompt)
+            intent = response_text.strip().upper()
             # Fallback to SPECIFIC if response is messy
             return "BROAD" if "BROAD" in intent else "SPECIFIC"
         except Exception:

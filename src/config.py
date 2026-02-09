@@ -7,7 +7,9 @@ load_dotenv()
 class Config:
     SUPABASE_URL = os.environ.get("SUPABASE_URL")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-    OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen:2.5")
+    OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+    OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
+    OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
     OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
     EMBEDDING_DIMENSION = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))  # Your nomic-embed-text = 1024
     # REQ-STABILITY-01: Context window limit for LLM
