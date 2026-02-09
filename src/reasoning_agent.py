@@ -208,18 +208,26 @@ class ReasoningAgent:
         """
         if context:
             # Knowledge-based task with context from documents
-            prompt = f"""You are a helpful research assistant analyzing documents.
+            prompt = f"""You are a helpful research assistant.
 
 TASK: {task}
 
 DOCUMENTS FROM KNOWLEDGE BASE:
 {context}
 
+CRITICAL INSTRUCTIONS:
+1. First, assess if the documents above are ACTUALLY RELEVANT to answering the task.
+2. If the documents are NOT relevant (e.g., unrelated content, garbage data, or don't answer the question), 
+   you MUST IGNORE them and solve the task computationally using Python code.
+3. For factual/computational questions (math, algorithms, well-known facts like Fibonacci numbers),
+   solve them directly with code rather than extracting from documents.
+
 Before answering, create a plan. Respond in this EXACT format:
 
-CONTEXT_NEEDED: [What specific information from the documents is relevant]
-GOAL: [Write Python code to extract and structure the answer from the documents]
-VERIFICATION: [How to verify the answer is correct, e.g., "Answer should summarize main topics"]
+CONTEXT_RELEVANT: [YES if documents genuinely help answer the task, NO if they should be ignored]
+CONTEXT_NEEDED: [What specific information from the documents is relevant, or "None - solving computationally"]
+GOAL: [What your code will accomplish - either extracting from documents OR computing directly]
+VERIFICATION: [How to verify the answer is correct, e.g., "Fibonacci(21) should equal 10946"]
 
 Be concise and specific."""
         else:
