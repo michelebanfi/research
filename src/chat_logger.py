@@ -8,6 +8,7 @@ capturing LLM prompts, responses, and timing information.
 import os
 import json
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -123,23 +124,24 @@ class ChatLogger:
             print(f"[LOG] Failed to write log file: {e}")
 
 
-# Global logger instance (can be replaced per session)
-_current_logger: Optional[ChatLogger] = None
+# REQ-ASYNC-01: Use contextvars for async-safe logger instance (replaces global mutable state)
+_current_logger: ContextVar[Optional[ChatLogger]] = ContextVar('current_logger', default=None)
 
 
 def get_logger() -> ChatLogger:
-    """Get or create the current chat logger."""
-    global _current_logger
-    if _current_logger is None:
-        _current_logger = ChatLogger()
-    return _current_logger
+    """Get or create the current chat logger (async-safe via contextvars)."""
+    logger = _current_logger.get()
+    if logger is None:
+        logger = ChatLogger()
+        _current_logger.set(logger)
+    return logger
 
 
 def new_session(session_id: Optional[str] = None) -> ChatLogger:
-    """Start a new logging session."""
-    global _current_logger
-    _current_logger = ChatLogger(session_id)
-    return _current_logger
+    """Start a new logging session (async-safe via contextvars)."""
+    logger = ChatLogger(session_id)
+    _current_logger.set(logger)
+    return logger
 
 
 def log_step(phase: str, message: str, data: Optional[dict] = None):
@@ -160,3 +162,4 @@ def log_error(error: str, context: Optional[dict] = None):
 def finish_session(status: str = "completed", result: Optional[str] = None):
     """Convenience function to finish the session."""
     get_logger().finish(status, result)
+

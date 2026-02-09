@@ -3,12 +3,26 @@ import json
 import ollama
 import asyncio
 import re
-from typing import List, Any, Dict
+import hashlib
+from functools import lru_cache
+from typing import List, Any, Dict, Tuple
 from openai import OpenAI, AsyncOpenAI
 from src.config import Config
 
+# Try to import tenacity for retry logic
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+    TENACITY_AVAILABLE = True
+except ImportError:
+    TENACITY_AVAILABLE = False
+    print("Warning: tenacity not installed. Retry logic disabled. Install with: pip install tenacity")
+
 
 class AIEngine:
+    # REQ-IMP-08: Class-level embedding cache (shared across instances)
+    _embedding_cache: Dict[str, List[float]] = {}
+    _cache_max_size: int = Config.EMBEDDING_CACHE_SIZE
+    
     def __init__(self):
         # LLM via OpenRouter
         self.model = Config.OPENROUTER_MODEL
@@ -26,6 +40,9 @@ class AIEngine:
         self.ollama_async_client = ollama.AsyncClient()
         # REQ-IMP-03: Load synonyms dynamically from config file
         self._load_synonyms()
+        
+        # REQ-IMP-06: Rate limiting semaphore
+        self._rate_limiter = asyncio.Semaphore(Config.API_MAX_CONCURRENT_CALLS)
     
     def _load_synonyms(self):
         """
@@ -50,21 +67,51 @@ class AIEngine:
             "machine learning": ["ml"],
             "artificial intelligence": ["ai"],
         }
+    
+    def _get_cache_key(self, text: str) -> str:
+        """Generate a cache key for the embedding."""
+        return hashlib.md5(text.encode()).hexdigest()
+    
+    def _cache_embedding(self, text: str, embedding: List[float]):
+        """Cache an embedding with LRU eviction."""
+        if len(self._embedding_cache) >= self._cache_max_size:
+            # Simple eviction: remove first item (not true LRU, but sufficient)
+            first_key = next(iter(self._embedding_cache))
+            del self._embedding_cache[first_key]
+        self._embedding_cache[self._get_cache_key(text)] = embedding
+    
+    def _get_cached_embedding(self, text: str) -> List[float] | None:
+        """Retrieve a cached embedding if it exists."""
+        return self._embedding_cache.get(self._get_cache_key(text))
 
     def generate_embedding(self, text: str) -> List[float]:
-        """Generates embedding for a given text via Ollama."""
+        """Generates embedding for a given text via Ollama. Uses cache if available."""
+        # REQ-IMP-08: Check cache first
+        cached = self._get_cached_embedding(text)
+        if cached is not None:
+            return cached
+        
         try:
             response = self.ollama_client.embeddings(model=self.embed_model, prompt=text)
-            return response["embedding"]
+            embedding = response["embedding"]
+            self._cache_embedding(text, embedding)
+            return embedding
         except Exception as e:
             print(f"Error generating embedding: {e}")
             return []
 
     async def generate_embedding_async(self, text: str) -> List[float]:
-        """Generates embedding for a given text asynchronously via Ollama."""
+        """Generates embedding for a given text asynchronously via Ollama. Uses cache if available."""
+        # REQ-IMP-08: Check cache first
+        cached = self._get_cached_embedding(text)
+        if cached is not None:
+            return cached
+        
         try:
             response = await self.ollama_async_client.embeddings(model=self.embed_model, prompt=text)
-            return response["embedding"]
+            embedding = response["embedding"]
+            self._cache_embedding(text, embedding)
+            return embedding
         except Exception as e:
             print(f"Error generating embedding async: {e}")
             return []
@@ -106,20 +153,68 @@ class AIEngine:
         return chunks if chunks else [text]
 
     async def _openrouter_generate(self, prompt: str) -> str:
-        """Helper to call OpenRouter via OpenAI SDK."""
-        response = await self.async_openai_client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
+        """
+        Helper to call OpenRouter via OpenAI SDK.
+        REQ-IMP-06: Uses rate limiting semaphore.
+        REQ-IMP-07: Uses retry logic with exponential backoff.
+        """
+        async with self._rate_limiter:
+            if TENACITY_AVAILABLE:
+                return await self._openrouter_generate_with_retry(prompt)
+            else:
+                return await self._openrouter_generate_simple(prompt)
+    
+    async def _openrouter_generate_simple(self, prompt: str) -> str:
+        """Simple implementation without tenacity retry."""
+        last_error = None
+        for attempt in range(Config.API_RETRY_ATTEMPTS):
+            try:
+                response = await self.async_openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                last_error = e
+                if attempt < Config.API_RETRY_ATTEMPTS - 1:
+                    wait_time = min(Config.API_RETRY_MIN_WAIT_S * (2 ** attempt), Config.API_RETRY_MAX_WAIT_S)
+                    await asyncio.sleep(wait_time)
+        raise last_error or Exception("Max retries exceeded")
+    
+    async def _openrouter_generate_with_retry(self, prompt: str) -> str:
+        """Implementation with tenacity retry decorator."""
+        @retry(
+            stop=stop_after_attempt(Config.API_RETRY_ATTEMPTS),
+            wait=wait_exponential(min=Config.API_RETRY_MIN_WAIT_S, max=Config.API_RETRY_MAX_WAIT_S)
         )
-        return response.choices[0].message.content or ""
+        async def _call():
+            response = await self.async_openai_client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content or ""
+        return await _call()
 
     def _openrouter_generate_sync(self, prompt: str) -> str:
-        """Synchronous helper to call OpenRouter via OpenAI SDK."""
-        response = self.openai_client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content or ""
+        """
+        Synchronous helper to call OpenRouter via OpenAI SDK.
+        REQ-IMP-07: Uses simple retry logic.
+        """
+        last_error = None
+        for attempt in range(Config.API_RETRY_ATTEMPTS):
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                last_error = e
+                if attempt < Config.API_RETRY_ATTEMPTS - 1:
+                    import time
+                    wait_time = min(Config.API_RETRY_MIN_WAIT_S * (2 ** attempt), Config.API_RETRY_MAX_WAIT_S)
+                    time.sleep(wait_time)
+        raise last_error or Exception("Max retries exceeded")
 
     async def generate_summary_async(self, text: str) -> str:
         """Generates a technical summary of the text asynchronously. Uses map-reduce for long texts."""
@@ -241,14 +336,15 @@ Return ONLY the JSON array, no other text."""
         clean_str = self._clean_json_string(json_str)
         
         try:
-            from pydantic import BaseModel, validator
+            from pydantic import BaseModel, field_validator
             from typing import List, Optional
             
             class GraphNode(BaseModel):
                 name: str
                 type: str = "Concept"
                 
-                @validator('name', pre=True, always=True)
+                @field_validator('name', mode='before')
+                @classmethod
                 def clean_name(cls, v):
                     return str(v).strip() if v else ""
             
@@ -259,7 +355,8 @@ Return ONLY the JSON array, no other text."""
                 source_type: str = "Concept"  # REQ-DATA-01: type for source node
                 target_type: str = "Concept"  # REQ-DATA-01: type for target node
                 
-                @validator('source', 'target', pre=True, always=True)
+                @field_validator('source', 'target', mode='before')
+                @classmethod
                 def clean_entity(cls, v):
                     return str(v).strip() if v else ""
             
@@ -274,8 +371,8 @@ Return ONLY the JSON array, no other text."""
             validated = GraphData(**raw_data)
             
             return {
-                "nodes": [n.dict() for n in validated.nodes],
-                "edges": [e.dict() for e in validated.edges]
+                "nodes": [n.model_dump() for n in validated.nodes],
+                "edges": [e.model_dump() for e in validated.edges]
             }
             
         except ImportError:

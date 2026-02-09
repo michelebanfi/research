@@ -59,17 +59,23 @@ class DatabaseClient:
             print(f"Error deleting file {file_id}: {e}")
             return False
 
-    def upload_file_metadata(self, project_id: str, name: str, path: str, summary: str, metadata: Dict) -> Dict[str, Any]:
-        """Uploads file metadata."""
-        file_data = {
-            "project_id": project_id,
-            "name": name,
-            "path": path,
-            "summary": summary,
-            "metadata": metadata
-        }
-        res = self.client.table("files").insert(file_data).execute()
-        return res.data[0]
+    def upload_file_metadata(self, project_id: str, name: str, path: str, summary: str, metadata: Dict) -> Optional[Dict[str, Any]]:
+        """Uploads file metadata. Returns the inserted row or None on failure."""
+        try:
+            file_data = {
+                "project_id": project_id,
+                "name": name,
+                "path": path,
+                "summary": summary,
+                "metadata": metadata
+            }
+            res = self.client.table("files").insert(file_data).execute()
+            if res.data and len(res.data) > 0:
+                return res.data[0]
+            return None
+        except Exception as e:
+            print(f"Error uploading file metadata: {e}")
+            return None
 
     def store_chunks(self, file_id: str, chunks: List[Dict[str, Any]]):
         """

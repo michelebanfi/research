@@ -183,7 +183,7 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                     )
                     if chunks:
                         context_parts = [f"Document {i+1}: {c['content']}" for i, c in enumerate(chunks)]
-                        context = "\\n\\n".join(context_parts)
+                        context = "\n\n".join(context_parts)
             except Exception as e:
                 print(f"Could not retrieve context for reasoning: {e}")
             

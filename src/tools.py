@@ -298,6 +298,7 @@ class ToolRegistry:
         
         Searches the web using DuckDuckGo for fresh information not in the knowledge base.
         Returns top 5 results with titles, snippets, and URLs.
+        REQ-IMP-09: Improved robustness with retry logic and rate limit handling.
         """
         self._notify("web_search", "start")
         
@@ -305,39 +306,54 @@ class ToolRegistry:
             self._notify("web_search", "complete")
             return "Error: No search query provided."
         
-        try:
-            from duckduckgo_search import DDGS
-            
-            results = []
-            with DDGS() as ddgs:
-                # Get up to 5 text results
-                for r in ddgs.text(query, max_results=5):
-                    results.append(r)
-            
-            if not results:
-                self._notify("web_search", "complete")
-                return f"No web results found for '{query}'."
-            
-            # Format results for LLM
-            output_parts = [f"**Web Search Results for '{query}':**\n"]
-            
-            for i, r in enumerate(results, 1):
-                title = r.get('title', 'No title')
-                body = r.get('body', '')[:300]  # Truncate snippets
-                url = r.get('href', '')
+        max_retries = 3
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                from duckduckgo_search import DDGS
                 
-                output_parts.append(f"[{i}] **{title}**")
-                output_parts.append(f"   {body}")
-                output_parts.append(f"   URL: {url}")
-                output_parts.append("")
-            
-            self._notify("web_search", "complete")
-            return "\n".join(output_parts)
-            
-        except ImportError:
-            self._notify("web_search", "complete")
-            return "Error: duckduckgo-search package not installed. Run: pip install duckduckgo-search"
-        except Exception as e:
-            self._notify("web_search", "complete")
-            return f"Error during web search: {str(e)}"
+                results = []
+                with DDGS() as ddgs:
+                    # Get up to 5 text results
+                    for r in ddgs.text(query, max_results=5):
+                        results.append(r)
+                
+                if not results:
+                    self._notify("web_search", "complete")
+                    return f"No web results found for '{query}'."
+                
+                # Format results for LLM
+                output_parts = [f"**Web Search Results for '{query}':**\n"]
+                
+                for i, r in enumerate(results, 1):
+                    title = r.get('title', 'No title')
+                    body = r.get('body', '')[:300]  # Truncate snippets
+                    url = r.get('href', '')
+                    
+                    output_parts.append(f"[{i}] **{title}**")
+                    output_parts.append(f"   {body}")
+                    output_parts.append(f"   URL: {url}")
+                    output_parts.append("")
+                
+                self._notify("web_search", "complete")
+                return "\n".join(output_parts)
+                
+            except ImportError:
+                self._notify("web_search", "complete")
+                return "Error: duckduckgo-search package not installed. Run: pip install duckduckgo-search"
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                # Check for rate limiting
+                if 'rate' in error_str or '429' in error_str or 'too many' in error_str:
+                    if attempt < max_retries - 1:
+                        import asyncio
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                # For other errors, break immediately
+                break
+        
+        self._notify("web_search", "complete")
+        return f"Error during web search after {max_retries} attempts: {str(last_error)}"
 
