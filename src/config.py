@@ -29,6 +29,9 @@ class Config:
     # REQ-IMP-08: Embedding cache size
     EMBEDDING_CACHE_SIZE = int(os.environ.get("EMBEDDING_CACHE_SIZE", "1000"))
 
+    # RERANK-01: Re-ranking model name
+    RERANK_MODEL_NAME = os.environ.get("RERANK_MODEL_NAME", "ms-marco-MiniLM-L-12-v2")
+
     @classmethod
     def validate(cls):
         """Ensures critical environment variables are set."""

@@ -397,13 +397,16 @@ Return ONLY the JSON array, no other text."""
         REQ-06: Resolve common synonyms to canonical forms.
         REQ-IMP-03: Now uses dynamically loaded synonyms.
         E.g., 'LLM' -> 'large language model'
+        Force lowercase to prevent duplicates.
         """
         name_lower = name.strip().lower()
         
         # Check if name matches any synonym
         for canonical, synonyms in self.entity_synonyms.items():
-            if name_lower == canonical or name_lower in synonyms:
-                return canonical
+            # Ensure canonical is also compared/returned in lowercase
+            canonical_lower = canonical.lower()
+            if name_lower == canonical_lower or name_lower in [s.lower() for s in synonyms]:
+                return canonical_lower
         
         return name_lower  # Return lowercase if no synonym match
     
@@ -546,8 +549,10 @@ If no merges needed, return: {{}}"""
             if not results:
                 return []
             
-            # Using a small, fast model. It will download on first run.
-            ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="./.cache")
+            # Use configured model
+            model_name = Config.RERANK_MODEL_NAME
+            # Note: FlashRank automatically uses MPS if available on Mac M1/M2/M3
+            ranker = Ranker(model_name=model_name, cache_dir="./.cache")
             
             # Prepare passages
             passages = [

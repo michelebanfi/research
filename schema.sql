@@ -27,7 +27,9 @@ create table file_chunks (
   chunk_index integer not null,
   embedding vector(1024), -- Your Ollama nomic-embed-text outputs 1024 dimensions
   metadata jsonb default '{}'::jsonb, -- REQ-02: Granular metadata (page, section, is_table, is_reference, etc.)
-  is_reference boolean default false -- REQ-04: Flag for bibliography/reference sections
+  is_reference boolean default false, -- REQ-04: Flag for bibliography/reference sections
+  parent_chunk_id uuid references file_chunks(id), -- Hierarchical: Parent chunk
+  chunk_level integer default 0 -- Hierarchical: 0=root/document, 1=section, 2=paragraph, etc.
 );
 
 -- Keywords table
@@ -44,6 +46,8 @@ create table file_keywords (
 );
 
 -- Function to match documents (excludes reference sections by default)
+drop function if exists match_file_chunks(vector, float, int, uuid, boolean);
+
 create or replace function match_file_chunks (
   query_embedding vector(1024),
   match_threshold float,
@@ -55,7 +59,9 @@ returns table (
   id uuid,
   file_id uuid,
   content text,
-  similarity float
+  similarity float,
+  parent_chunk_id uuid,
+  chunk_level integer
 )
 language plpgsql
 as $$
@@ -65,7 +71,9 @@ begin
     file_chunks.id,
     file_chunks.file_id,
     file_chunks.content,
-    1 - (file_chunks.embedding <=> query_embedding) as similarity
+    1 - (file_chunks.embedding <=> query_embedding) as similarity,
+    file_chunks.parent_chunk_id,
+    file_chunks.chunk_level
   from file_chunks
   join files on files.id = file_chunks.file_id
   where 1 - (file_chunks.embedding <=> query_embedding) > match_threshold

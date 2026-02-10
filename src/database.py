@@ -86,12 +86,15 @@ class DatabaseClient:
         data_to_insert = []
         for chunk in chunks:
             chunk_data = {
+                "id": chunk.get('id'), # Hierarchical: Explicit ID
                 "file_id": file_id,
                 "content": chunk['content'],
                 "chunk_index": chunk['chunk_index'],
                 "embedding": chunk['embedding'],
                 "metadata": chunk.get('metadata', {}),
-                "is_reference": chunk.get('is_reference', False)
+                "is_reference": chunk.get('is_reference', False),
+                "parent_chunk_id": chunk.get('parent_chunk_id'), # Hierarchical
+                "chunk_level": chunk.get('chunk_level', 0) # Hierarchical
             }
             data_to_insert.append(chunk_data)
         self.client.table("file_chunks").insert(data_to_insert).execute()

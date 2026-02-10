@@ -1,4 +1,5 @@
 import os
+import uuid
 import ast
 from enum import Enum
 from pathlib import Path
@@ -148,7 +149,25 @@ class DoclingParser:
             chunk_iter = self.chunker.chunk(result.document)
             
             chunks = []
+            chunk_id_map = {} # Map Docling Chunk object ID to UUID
+            
             for i, chunk in enumerate(chunk_iter):
+                # Generate a UUID for this chunk
+                chunk_uuid = str(uuid.uuid4())
+                chunk_id_map[id(chunk)] = chunk_uuid
+                
+                # Resolve parent if available
+                parent_chunk_id = None
+                if hasattr(chunk, 'parent') and chunk.parent:
+                    parent_chunk_id = chunk_id_map.get(id(chunk.parent))
+                
+                # Resolve level/depth
+                chunk_level = 0
+                if hasattr(chunk, 'level'):
+                    chunk_level = chunk.level
+                elif hasattr(chunk, 'depth'):
+                    chunk_level = chunk.depth
+
                 # REQ-02: Extract granular metadata
                 metadata = self._extract_granular_metadata(chunk, i)
                 
@@ -162,6 +181,9 @@ class DoclingParser:
                 key_claim_section = self._detect_key_claim_section(metadata)
                 
                 chunk_data = {
+                    "id": chunk_uuid,
+                    "parent_chunk_id": parent_chunk_id,
+                    "chunk_level": chunk_level,
                     "content": chunk.text,
                     "chunk_index": i,
                     "metadata": metadata,
