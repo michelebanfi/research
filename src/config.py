@@ -30,6 +30,7 @@ class Config:
     EMBEDDING_CACHE_SIZE = int(os.environ.get("EMBEDDING_CACHE_SIZE", "1000"))
 
     # RERANK-01: Re-ranking model name
+    # Options: ms-marco-MiniLM-L-12-v2 (default), rank-T5-flan, rank_zephyr_7b_v1_full
     RERANK_MODEL_NAME = os.environ.get("RERANK_MODEL_NAME", "ms-marco-MiniLM-L-12-v2")
 
     @classmethod

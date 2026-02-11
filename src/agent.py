@@ -23,6 +23,7 @@ class AgentResponse:
     retrieved_chunks: List[Dict[str, Any]] = field(default_factory=list)
     matched_concepts: List[str] = field(default_factory=list)
     tools_used: List[str] = field(default_factory=list)
+    model_name: str = "unknown"
     error: Optional[str] = None
 
 
@@ -229,7 +230,7 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                 
                 # Call LLM
                 start_time = time.time()
-                llm_response = await self.ai._openrouter_generate(conversation)
+                llm_response, model_name = await self.ai._openrouter_generate(conversation, return_model_name=True)
                 duration = time.time() - start_time
                 
                 logger.log_llm_call(conversation, llm_response, duration, self.ai.model)
@@ -243,7 +244,8 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                         answer=final_answer,
                         retrieved_chunks=retrieved_chunks,
                         matched_concepts=matched_concepts,
-                        tools_used=tools_used
+                        tools_used=tools_used,
+                        model_name=model_name
                     )
                 
                 # Check for action
@@ -326,7 +328,8 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                             answer=llm_response,
                             retrieved_chunks=retrieved_chunks,
                             matched_concepts=matched_concepts,
-                            tools_used=tools_used
+                            tools_used=tools_used,
+                            model_name=model_name
                         )
                     
                     conversation += f"\n\n{llm_response}\n\nRemember: Use ACTION: tool_name(argument) to call a tool, or FINAL ANSWER: to provide your response."
@@ -354,7 +357,7 @@ Answer this question: {user_query}
 
 Provide a helpful, complete answer based on the information above."""
                 start_time = time.time()
-                fallback_response = await self.ai._openrouter_generate(fallback_prompt)
+                fallback_response, model_name = await self.ai._openrouter_generate(fallback_prompt, return_model_name=True)
                 duration = time.time() - start_time
                 logger.log_llm_call(fallback_prompt, fallback_response, duration, self.ai.model)
                 logger.finish("success", "Fallback synthesis")
@@ -388,7 +391,8 @@ Provide a helpful, complete answer based on the information above."""
                         answer=response["response"],
                         retrieved_chunks=chunks,
                         matched_concepts=matched_concepts,
-                        tools_used=["vector_search (fallback)"]
+                        tools_used=["vector_search (fallback)"],
+                        model_name=response.get("model", "unknown")
                     )
         except Exception as e:
             pass

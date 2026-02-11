@@ -152,19 +152,23 @@ class AIEngine:
         
         return chunks if chunks else [text]
 
-    async def _openrouter_generate(self, prompt: str) -> str:
+    async def _openrouter_generate(self, prompt: str, return_model_name: bool = False) -> Any:
         """
         Helper to call OpenRouter via OpenAI SDK.
         REQ-IMP-06: Uses rate limiting semaphore.
         REQ-IMP-07: Uses retry logic with exponential backoff.
+        
+        Args:
+            prompt: The user prompt.
+            return_model_name: If True, returns (content, model_name). Else returns content.
         """
         async with self._rate_limiter:
             if TENACITY_AVAILABLE:
-                return await self._openrouter_generate_with_retry(prompt)
+                return await self._openrouter_generate_with_retry(prompt, return_model_name)
             else:
-                return await self._openrouter_generate_simple(prompt)
+                return await self._openrouter_generate_simple(prompt, return_model_name)
     
-    async def _openrouter_generate_simple(self, prompt: str) -> str:
+    async def _openrouter_generate_simple(self, prompt: str, return_model_name: bool = False) -> Any:
         """Simple implementation without tenacity retry."""
         last_error = None
         for attempt in range(Config.API_RETRY_ATTEMPTS):
@@ -173,7 +177,10 @@ class AIEngine:
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}]
                 )
-                return response.choices[0].message.content or ""
+                content = response.choices[0].message.content or ""
+                if return_model_name:
+                    return content, response.model
+                return content
             except Exception as e:
                 last_error = e
                 if attempt < Config.API_RETRY_ATTEMPTS - 1:
@@ -181,7 +188,7 @@ class AIEngine:
                     await asyncio.sleep(wait_time)
         raise last_error or Exception("Max retries exceeded")
     
-    async def _openrouter_generate_with_retry(self, prompt: str) -> str:
+    async def _openrouter_generate_with_retry(self, prompt: str, return_model_name: bool = False) -> Any:
         """Implementation with tenacity retry decorator."""
         @retry(
             stop=stop_after_attempt(Config.API_RETRY_ATTEMPTS),
@@ -192,7 +199,10 @@ class AIEngine:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}]
             )
-            return response.choices[0].message.content or ""
+            content = response.choices[0].message.content or ""
+            if return_model_name:
+                return content, response.model
+            return content
         return await _call()
 
     def _openrouter_generate_sync(self, prompt: str) -> str:
@@ -459,8 +469,8 @@ If no merges needed, return: {{}}"""
 
     def _normalize_graph_entities(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        REQ-06: Normalizes entity names using synonym dictionary.
-        LLM resolution is done separately during ingestion for async support.
+        REQ-06: Normalizes entity names using synonym dictionary and case-insensitive matching.
+        Improves upon simple lowercasing by preserving display case using frequency or canonical mapping.
         """
         if not data:
             return {"nodes": [], "edges": []}
@@ -468,35 +478,93 @@ If no merges needed, return: {{}}"""
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
         
-        # Build name mapping from synonym resolution
-        name_mapping = {}
+        # 1. First pass: Apply explicit synonyms from config
+        # Name -> Canonical Name (all lower for keying)
+        name_mapping = {} 
         
-        # First pass: resolve all names using synonym dictionary
         for node in nodes:
-            if "name" in node:
-                original = node["name"]
-                canonical = self._resolve_entity_synonyms(original)
-                name_mapping[original.strip().lower()] = canonical
-                node["name"] = canonical
+            original_name = node["name"]
+            # Check explicit synonyms first
+            canonical_synonym = self._resolve_entity_synonyms(original_name)
+            
+            # If synonym found (and it's different), map it
+            if canonical_synonym != original_name.lower():
+                name_mapping[original_name.lower()] = canonical_synonym
+            else:
+                # Otherwise map to itself (lower) for now
+                name_mapping[original_name.lower()] = original_name.lower()
+
+        # 2. Second pass: Identify "Best Display Name" for each canonical lower key
+        # e.g. "LLM", "llm", "Llm" -> all map to "llm" key, but we want "LLM" for display
         
-        # Apply same mapping to edges
+        # key: lower_name, value: Counter(original_names)
+        from collections import Counter
+        display_candidates = {}
+        
+        for node in nodes:
+            original = node["name"]
+            lower_key = name_mapping.get(original.lower(), original.lower())
+            
+            if lower_key not in display_candidates:
+                display_candidates[lower_key] = Counter()
+            display_candidates[lower_key][original] += 1
+            
+        # Determine best display name for each key
+        final_display_names = {}
+        for key, counter in display_candidates.items():
+            # Heuristic: Prefer all-caps if short (e.g. LLM), otherwise most frequent
+            # If there's a synonym override in config (canonical), use that as display if it looks good
+            
+            # Check if key itself was a canonical from synonym dict that might not be in the counter
+            # In _resolve_entity_synonyms we return lower(), so we might want to title case it if it's not an acronym
+            best_name = counter.most_common(1)[0][0]
+            
+            # If the key is less than 4 chars and we have an uppercase version, prefer it
+            if len(key) < 5:
+                for cand in counter:
+                    if cand.isupper():
+                        best_name = cand
+                        break
+            
+            final_display_names[key] = best_name
+
+        # 3. Apply normalization
+        unique_nodes = {}
+        
+        for node in nodes:
+            original = node["name"]
+            lower_key = name_mapping.get(original.lower(), original.lower())
+            display_name = final_display_names.get(lower_key, original)
+            
+            # Create/Update node
+            # We merge types if we see duplicates (maybe?) but for now just take the first or "Concept"
+            if display_name not in unique_nodes:
+                node["name"] = display_name
+                unique_nodes[display_name] = node
+            else:
+                # Merge logic: if existing is "Concept" and new is specific, take specific
+                existing = unique_nodes[display_name]
+                if existing.get("type") == "Concept" and node.get("type") != "Concept":
+                    existing["type"] = node.get("type")
+
+        # Rewrite edges
+        final_edges = []
         for edge in edges:
-            if "source" in edge:
-                original = edge["source"].strip().lower()
-                edge["source"] = name_mapping.get(original, self._resolve_entity_synonyms(edge["source"]))
-            if "target" in edge:
-                original = edge["target"].strip().lower()
-                edge["target"] = name_mapping.get(original, self._resolve_entity_synonyms(edge["target"]))
-        
-        # Deduplicate nodes with same name
-        seen_names = {}
-        unique_nodes = []
-        for node in nodes:
-            if node["name"] not in seen_names:
-                seen_names[node["name"]] = True
-                unique_nodes.append(node)
+            s_original = edge.get("source", "")
+            t_original = edge.get("target", "")
+            
+            s_key = name_mapping.get(s_original.lower(), s_original.lower())
+            t_key = name_mapping.get(t_original.lower(), t_original.lower())
+            
+            s_final = final_display_names.get(s_key, s_original)
+            t_final = final_display_names.get(t_key, t_original)
+            
+            if s_final and t_final and s_final != t_final:
+                edge["source"] = s_final
+                edge["target"] = t_final
+                final_edges.append(edge)
                 
-        return {"nodes": unique_nodes, "edges": edges}
+        return {"nodes": list(unique_nodes.values()), "edges": final_edges}
 
     async def extract_metadata_graph_async(self, text: str) -> Dict[str, Any]:
         """
@@ -683,11 +751,11 @@ Instructions:
 - Be concise but comprehensive
 - If you need to reason through the answer, do so step by step"""
 
-            response_text = await self._openrouter_generate(prompt)
+            response_text, model_name = await self._openrouter_generate(prompt, return_model_name=True)
             
             return {
                 "response": response_text,
-                "model": self.model
+                "model": model_name
             }
             
         except Exception as e:

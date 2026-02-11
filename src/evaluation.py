@@ -54,7 +54,11 @@ async def evaluate_query(query: str, project_id: str, ai_engine: AIEngine, db: D
     for i, res in enumerate(reranked_results[:2]):
         context_str += f"{i+1}. {res['content'][:200]}...\n"
         
-    judge_prompt = f"""You are an expert evaluator. Rate the quality of the AI response to the user query on a scale of 1 to 5.
+    judge_prompt = f"""You are an expert evaluator. Rate the quality of the AI response on three metrics:
+
+1. **Relevance (1-5)**: How well does the answer address the user's query?
+2. **Faithfulness (1-5)**: Is the answer derived *entirely* from the provided context (no hallucinations)?
+3. **Accuracy (1-5)**: Is the information factually correct based on the context?
 
 User Query: "{query}"
 
@@ -63,21 +67,20 @@ Retrieved Context (Top 2):
 
 AI Response: "{response_text}"
 
-Criteria:
-1 - Irrelevant or Hallucinated
-3 - Partially Correct
-5 - Excellent, Accurate, and Comprehensive
-
-Return ONLY a JSON object: {{"score": <int>, "reason": "<string>"}}"""
+Return ONLY a JSON object: {{"relevance": <int>, "faithfulness": <int>, "accuracy": <int>, "reason": "<string>"}}"""
 
     try:
         judge_response = await ai_engine._openrouter_generate(judge_prompt)
         clean_json = ai_engine._clean_json_string(judge_response)
         eval_metrics = json.loads(clean_json)
-        results['relevance_score'] = eval_metrics.get('score')
+        results['relevance_score'] = eval_metrics.get('relevance')
         results['relevance_reason'] = eval_metrics.get('reason')
-        print(f"  Relevance Score: {results['relevance_score']}/5")
+        print(f"  Relevance: {eval_metrics.get('relevance')}/5")
+        print(f"  Faithfulness: {eval_metrics.get('faithfulness')}/5")
+        print(f"  Accuracy: {eval_metrics.get('accuracy')}/5")
         print(f"  Reason: {results['relevance_reason']}")
+        
+        results['metrics'] = eval_metrics
     except Exception as e:
         print(f"  Evaluation Failed: {e}")
         results['relevance_score'] = None

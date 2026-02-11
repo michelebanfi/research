@@ -169,6 +169,25 @@ class DatabaseClient:
                 r['file_path'] = f_info['path']
                 r['file_name'] = f_info['name']
                 
+        # 4. Small-to-Big Retrieval: Fetch Parent Chunks
+        # If a chunk has a parent_chunk_id, we want to provide the parent's content as context
+        parent_ids = [r['parent_chunk_id'] for r in results if r.get('parent_chunk_id')]
+        
+        if parent_ids:
+            # Fetch parents
+            parents_resp = self.client.table("file_chunks").select("id, content").in_("id", parent_ids).execute()
+            parent_map = {p['id']: p['content'] for p in parents_resp.data}
+            
+            for r in results:
+                pid = r.get('parent_chunk_id')
+                if pid and pid in parent_map:
+                    # Enriched content: "Parent Context:\n...\n\nSpecific Match:\n..."
+                    # Or just replace it if the parent is the containing section
+                    parent_content = parent_map[pid]
+                    # Check if parent content is significantly larger/different
+                    if len(parent_content) > len(r['content']):
+                         r['content'] = f"{parent_content}\n\n[Specific Match found in subsection]"
+                    
         return results
 
     def store_graph_data(self, file_id: str, nodes: List[Dict[str, str]], edges: List[Dict[str, str]]):
