@@ -478,11 +478,8 @@ if st.session_state.get("selected_project_id"):
                             
                             async def safe_summary():
                                 try:
-                                    response = await async_client.generate(
-                                        model=ai.model, 
-                                        prompt=f"Summarize the following technical content concisely:\n\n{full_text[:4000]}"
-                                    )
-                                    return response["response"]
+                                    # Use AIEngine's summarize method which handles the remote model correctly
+                                    return await ai.generate_summary_async(full_text[:4000])
                                 except Exception as e:
                                     print(f"Summary error: {e}")
                                     return "Summary generation failed."
