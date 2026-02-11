@@ -80,77 +80,67 @@ class ResearchAgent:
 TOOLS:
 {tool_descriptions}
 
-TO USE A TOOL:
-ACTION: tool_name(your query here)
+FORMAT:
+You must respond in JSON format with a "thought" field and either an "action" or "final_answer" field.
 
-TO GIVE FINAL ANSWER:
-FINAL ANSWER: your complete answer here
+RESPONSE EXAMPLES:
 
-EXAMPLE:
-User: What is machine learning?
-ACTION: vector_search(machine learning definition)
+1. To call a tool:
+{{
+  "thought": "I need to search for machine learning definitions.",
+  "action": {{
+    "tool_name": "vector_search",
+    "argument": "machine learning definition"
+  }}
+}}
 
-User: What is this project about?
-ACTION: project_summary()
+2. To give a final answer:
+{{
+  "thought": "I have found enough information to answer the user.",
+  "final_answer": "Machine learning is a field of study..."
+}}
 
-ALWAYS start by calling a tool. Write ACTION: now."""
+GUIDELINES:
+1. Always include a "thought" field to explain your reasoning step-by-step.
+2. Only use valid JSON.
+3. Choose the most relevant tool for the task.
+4. When you have sufficient information, provide a "final_answer".
+"""
 
-    def _parse_action(self, response: str) -> Optional[tuple]:
+    def _parse_json_response(self, response: str) -> dict:
         """
-        REQ-FIX-02: Parse the LLM response for an ACTION: tool_name(argument) pattern.
-        Uses balanced parentheses matching to handle arguments containing parens.
-        
-        Returns:
-            Tuple of (tool_name, argument) or None if no action found
+        Parses the LLM response as JSON.
+        Handles code blocks and raw JSON.
         """
-        import re
-        
-        # First, find ACTION: tool_name( pattern
-        action_start = re.search(r'ACTION:\s*(\w+)\(', response, re.IGNORECASE)
-        if not action_start:
-            return None
-        
-        tool_name = action_start.group(1).lower().strip()
-        start_idx = action_start.end()  # Position right after the opening (
-        
-        # REQ-FIX-02: Use balanced parentheses counter to find matching close paren
-        paren_count = 1
-        end_idx = start_idx
-        
-        while end_idx < len(response) and paren_count > 0:
-            char = response[end_idx]
-            if char == '(':
-                paren_count += 1
-            elif char == ')':
-                paren_count -= 1
-            end_idx += 1
-        
-        if paren_count != 0:
-            # Unbalanced parens - fallback to simple regex
-            pattern = r'ACTION:\s*(\w+)\((.*)\)'
-            match = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
-            if match:
-                return (match.group(1).lower().strip(), match.group(2).strip().strip('"').strip("'"))
-            return None
-        
-        # Extract argument (excluding the final closing paren)
-        argument = response[start_idx:end_idx-1].strip().strip('"').strip("'")
-        return (tool_name, argument)
-    
-    def _parse_final_answer(self, response: str) -> Optional[str]:
+        import json
+        try:
+            # Strip markdown code blocks if present
+            clean_response = response.strip()
+            if clean_response.startswith("```json"):
+                clean_response = clean_response[7:]
+            if clean_response.startswith("```"):
+                clean_response = clean_response[3:]
+            if clean_response.endswith("```"):
+                clean_response = clean_response[:-3]
+            
+            return json.loads(clean_response.strip())
+        except json.JSONDecodeError:
+            return {}
+
+    def _parse_action(self, response_data: dict) -> Optional[tuple]:
         """
-        Parse the LLM response for a FINAL ANSWER.
-        
-        Returns:
-            The final answer text or None if not found
+        Extracts action from parsed JSON response.
         """
-        pattern = r'FINAL ANSWER:\s*(.+)'
-        match = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
-        
-        if match:
-            return match.group(1).strip()
-        
+        action = response_data.get("action")
+        if action and isinstance(action, dict):
+            return (action.get("tool_name"), action.get("argument"))
         return None
+    
+    def _parse_final_answer(self, response_data: dict) -> Optional[str]:
+        """
+        Extracts final answer from parsed JSON response.
+        """
+        return response_data.get("final_answer")
     
     async def run(
         self, 
@@ -218,7 +208,7 @@ ALWAYS start by calling a tool. Write ACTION: now."""
         
         # Build the conversation for the agent
         system_prompt = self._get_system_prompt()
-        conversation = f"{system_prompt}{history_text}\n\nUSER QUERY: {user_query}\n\nThink step by step. What tool(s) do you need to answer this question?"
+        conversation = f"{system_prompt}{history_text}\n\nUSER QUERY: {user_query}\n\nThink step by step in JSON format."
         
         logger.log_step("prompt", "Initial prompt built", {"prompt_length": len(conversation)})
         
@@ -228,15 +218,25 @@ ALWAYS start by calling a tool. Write ACTION: now."""
             try:
                 logger.log_step("iteration", f"Starting iteration {iteration + 1}/{self.MAX_ITERATIONS}")
                 
-                # Call LLM
+                # Call LLM with JSON mode
                 start_time = time.time()
-                llm_response, model_name = await self.ai._openrouter_generate(conversation, return_model_name=True)
+                llm_response_str, model_name = await self.ai._openrouter_generate(
+                    conversation, 
+                    return_model_name=True,
+                    response_format={"type": "json_object"}
+                )
                 duration = time.time() - start_time
                 
-                logger.log_llm_call(conversation, llm_response, duration, self.ai.model)
+                logger.log_llm_call(conversation, llm_response_str, duration, self.ai.model)
                 
+                # Parse JSON
+                response_data = self._parse_json_response(llm_response_str)
+                thought = response_data.get("thought", "")
+                if thought:
+                     logger.log_step("thought", f"Agent thought: {thought}")
+
                 # Check for final answer
-                final_answer = self._parse_final_answer(llm_response)
+                final_answer = self._parse_final_answer(response_data)
                 if final_answer:
                     logger.log_step("complete", "Final answer found", {"answer_length": len(final_answer)})
                     logger.finish("success", final_answer[:200])
@@ -249,9 +249,14 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                     )
                 
                 # Check for action
-                action = self._parse_action(llm_response)
+                action = self._parse_action(response_data)
                 if action:
                     tool_name, argument = action
+                    # Ensure argument is a string for logging/execution compatibility
+                    if not isinstance(argument, str):
+                        import json
+                        argument = json.dumps(argument) if argument is not None else ""
+                        
                     logger.log_step("action", f"Parsed action: {tool_name}", {"argument": argument[:100]})
                     tool = self.tools.get_tool(tool_name)
                     
@@ -314,25 +319,15 @@ ALWAYS start by calling a tool. Write ACTION: now."""
                             matched_concepts.extend(concepts)
                         
                         # Add observation to conversation
-                        conversation += f"\n\n{llm_response}\n\nOBSERVATION from {tool_name}:\n{observation}\n\nBased on this observation, what's next? Use another tool or provide FINAL ANSWER:"
+                        # Keep conversation string simple for next turn
+                        conversation += f"\n\nASSISTANT JSON:\n{llm_response_str}\n\nOBSERVATION from {tool_name}:\n{observation}\n\nBased on this observation, provide the next step in JSON format."
                     else:
                         # Unknown tool
-                        conversation += f"\n\n{llm_response}\n\nOBSERVATION: Unknown tool '{tool_name}'. Available tools are: vector_search, graph_search, project_summary.\n\nPlease try again or provide FINAL ANSWER:"
+                        conversation += f"\n\nASSISTANT JSON:\n{llm_response_str}\n\nOBSERVATION: Unknown tool '{tool_name}'. Available tools are: vector_search, graph_search, project_summary.\n\nPlease try again with a valid tool in JSON format."
                 else:
-                    # No action found - nudge towards final answer
-                    logger.log_step("no_action", "No action parsed from response", {"response_preview": llm_response[:100]})
-                    if "final" in llm_response.lower() or iteration >= self.MAX_ITERATIONS - 2:
-                        # LLM might have just answered without the prefix
-                        logger.finish("success", llm_response[:200])
-                        return AgentResponse(
-                            answer=llm_response,
-                            retrieved_chunks=retrieved_chunks,
-                            matched_concepts=matched_concepts,
-                            tools_used=tools_used,
-                            model_name=model_name
-                        )
-                    
-                    conversation += f"\n\n{llm_response}\n\nRemember: Use ACTION: tool_name(argument) to call a tool, or FINAL ANSWER: to provide your response."
+                    # No action found - nudge/error
+                    logger.log_step("no_action", "No action parsed from JSON", {"response_preview": llm_response_str[:100]})
+                    conversation += f"\n\nASSISTANT JSON:\n{llm_response_str}\n\nERROR: Invalid JSON or missing 'action'/'final_answer'. Please respond with valid JSON containing 'thought' and 'action' OR 'final_answer'."
                     
             except Exception as e:
                 logger.log_error(f"Exception in iteration: {e}")

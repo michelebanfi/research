@@ -152,7 +152,7 @@ class AIEngine:
         
         return chunks if chunks else [text]
 
-    async def _openrouter_generate(self, prompt: str, return_model_name: bool = False) -> Any:
+    async def _openrouter_generate(self, prompt: str, return_model_name: bool = False, response_format: dict = None) -> Any:
         """
         Helper to call OpenRouter via OpenAI SDK.
         REQ-IMP-06: Uses rate limiting semaphore.
@@ -161,22 +161,27 @@ class AIEngine:
         Args:
             prompt: The user prompt.
             return_model_name: If True, returns (content, model_name). Else returns content.
+            response_format: Optional dict for JSON mode (e.g. {"type": "json_object"}).
         """
         async with self._rate_limiter:
             if TENACITY_AVAILABLE:
-                return await self._openrouter_generate_with_retry(prompt, return_model_name)
+                return await self._openrouter_generate_with_retry(prompt, return_model_name, response_format)
             else:
-                return await self._openrouter_generate_simple(prompt, return_model_name)
+                return await self._openrouter_generate_simple(prompt, return_model_name, response_format)
     
-    async def _openrouter_generate_simple(self, prompt: str, return_model_name: bool = False) -> Any:
+    async def _openrouter_generate_simple(self, prompt: str, return_model_name: bool = False, response_format: dict = None) -> Any:
         """Simple implementation without tenacity retry."""
         last_error = None
         for attempt in range(Config.API_RETRY_ATTEMPTS):
             try:
-                response = await self.async_openai_client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}]
-                )
+                kwargs = {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}]
+                }
+                if response_format:
+                    kwargs["response_format"] = response_format
+                
+                response = await self.async_openai_client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content or ""
                 if return_model_name:
                     return content, response.model
@@ -188,17 +193,21 @@ class AIEngine:
                     await asyncio.sleep(wait_time)
         raise last_error or Exception("Max retries exceeded")
     
-    async def _openrouter_generate_with_retry(self, prompt: str, return_model_name: bool = False) -> Any:
+    async def _openrouter_generate_with_retry(self, prompt: str, return_model_name: bool = False, response_format: dict = None) -> Any:
         """Implementation with tenacity retry decorator."""
         @retry(
             stop=stop_after_attempt(Config.API_RETRY_ATTEMPTS),
             wait=wait_exponential(min=Config.API_RETRY_MIN_WAIT_S, max=Config.API_RETRY_MAX_WAIT_S)
         )
         async def _call():
-            response = await self.async_openai_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            kwargs = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            if response_format:
+                kwargs["response_format"] = response_format
+
+            response = await self.async_openai_client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content or ""
             if return_model_name:
                 return content, response.model
