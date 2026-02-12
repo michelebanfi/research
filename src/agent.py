@@ -47,7 +47,8 @@ class ResearchAgent:
         database, 
         project_id: str,
         status_callback: Optional[Callable[[str, str], None]] = None,
-        do_rerank: bool = True
+        do_rerank: bool = True,
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None  # REQ-UI-OBS-01
     ):
         """
         Initialize the Research Agent.
@@ -56,18 +57,29 @@ class ResearchAgent:
             ai_engine: AIEngine instance for LLM calls
             database: DatabaseClient instance
             project_id: Current project ID
-            status_callback: Optional callback(tool_name, phase) for UI updates
+            status_callback: Optional callback(tool_name, phase) for UI updates (Legacy)
             do_rerank: Whether to re-rank vector search results using FlashRank
+            event_callback: Callback for structured AgentEvents
         """
         self.ai = ai_engine
         self.db = database
         self.project_id = project_id
         self.status_callback = status_callback
+        self.event_callback = event_callback
         
         # Import here to avoid circular imports
         from src.tools import ToolRegistry
         self.tools = ToolRegistry(database, ai_engine, project_id, status_callback, do_rerank=do_rerank)
-    
+
+    def _emit_event(self, type: str, content: str, metadata: Dict[str, Any] = None):
+        """Helper to emit events if callback is registered."""
+        if self.event_callback:
+            self.event_callback({
+                "type": type,
+                "content": content,
+                "metadata": metadata or {}
+            })
+
     def _get_system_prompt(self) -> str:
         """
         REQ-AGENT-02: Create system prompt with tool usage guidance.
@@ -150,17 +162,10 @@ GUIDELINES:
     ) -> Union[AgentResponse, ReasoningResponse]:
         """
         Run the agent loop to answer the user's query.
-        
-        Args:
-            user_query: The user's question
-            chat_history: Optional conversation history
-            reasoning_mode: If True, use Plan & Code loop (REQ-POETIQ-02)
-            
-        Returns:
-            AgentResponse or ReasoningResponse with the answer and metadata
         """
         # REQ-POETIQ-02: Reasoning Toggle
         if reasoning_mode:
+            self._emit_event("thought", "Switching to Reasoning Mode (Plan & Code)...")
             # First, retrieve relevant context from knowledge base for the reasoning agent
             context = ""
             try:
@@ -191,6 +196,8 @@ GUIDELINES:
             "has_history": bool(chat_history),
             "max_iterations": self.MAX_ITERATIONS
         })
+        
+        self._emit_event("thought", f"Starting analysis for: {user_query}", {"iteration": 0})
         
         tools_used = []
         retrieved_chunks = []
@@ -234,12 +241,14 @@ GUIDELINES:
                 thought = response_data.get("thought", "")
                 if thought:
                      logger.log_step("thought", f"Agent thought: {thought}")
+                     self._emit_event("thought", thought, {"iteration": iteration+1})
 
                 # Check for final answer
                 final_answer = self._parse_final_answer(response_data)
                 if final_answer:
                     logger.log_step("complete", "Final answer found", {"answer_length": len(final_answer)})
                     logger.finish("success", final_answer[:200])
+                    self._emit_event("result", "Synthesizing final answer...", {"model": model_name})
                     return AgentResponse(
                         answer=final_answer,
                         retrieved_chunks=retrieved_chunks,
@@ -247,6 +256,7 @@ GUIDELINES:
                         tools_used=tools_used,
                         model_name=model_name
                     )
+
                 
                 # Check for action
                 action = self._parse_action(response_data)
@@ -258,6 +268,8 @@ GUIDELINES:
                         argument = json.dumps(argument) if argument is not None else ""
                         
                     logger.log_step("action", f"Parsed action: {tool_name}", {"argument": argument[:100]})
+                    self._emit_event("tool", f"Calling tool: {tool_name}", {"argument": argument})
+                    
                     tool = self.tools.get_tool(tool_name)
                     
                     if tool:
@@ -265,9 +277,22 @@ GUIDELINES:
                         
                         # Execute the tool (REQ-FIX-01: await async tool)
                         tool_start = time.time()
+                        
+                        # Pass callback to retrieve_advanced if supported
+                        if tool_name == "advanced_retrieval" and hasattr(self.ai, "retrieve_advanced"):
+                             # This logic would be inside the tool wrapper if we had time to refactor tools completely
+                             # For now, we rely on the tool executing standard logic.
+                             # If we want detailed events from inside the tool, we need to pass the callback to the tool execution
+                             # But standard tool interface is just 'execute(arg)'.
+                             # For this phase, we'll just track the outer result.
+                             pass
+
                         observation = await tool.execute(argument)
                         tool_duration = time.time() - tool_start
                         observations.append((tool_name, observation))
+                        
+                        # Emit result event
+                        self._emit_event("tool_result", f"Tool {tool_name} returned results.", {"duration": tool_duration, "preview": observation[:200]})
                         
                         logger.log_step("tool_result", f"Tool {tool_name} executed", {
                             "duration_s": round(tool_duration, 2),
@@ -277,8 +302,10 @@ GUIDELINES:
                         # Extract chunks for context panel (from vector_search)
                         if tool_name == "vector_search":
                             # Re-run search to get structured results for UI
+                            # Also trigger advanced retrieval events if possible
                             query_embedding = self.ai.generate_embedding(argument)
                             if query_embedding:
+                                # For UI purposes, we want to show what was found
                                 chunks = self.db.search_vectors(
                                     query_embedding,
                                     match_threshold=0.3,
@@ -291,6 +318,8 @@ GUIDELINES:
                                         chunks = self.ai.rerank_results(argument, chunks, top_k=5)
                                     except Exception as e:
                                         print(f"Re-ranking for UI failed: {e}")
+                                
+                                self._emit_event("search", f"Background search returned {len(chunks)} chunks.", {"count": len(chunks)})
                                 for c in chunks:
                                     c['source'] = 'vector'
                                 retrieved_chunks.extend(chunks)

@@ -11,10 +11,30 @@ def render_chat_tab(db, ai):
     """
     st.subheader("Chat with your Knowledge Base")
     
-    # Two-column layout: Chat (70%) | Context Panel (30%)
-    chat_col, context_col = st.columns([7, 3])
+    # Two-column layout: Chat (50%) | Process/Context (50%)
+    col1, col2 = st.columns([1, 1])
     
-    with chat_col:
+    # Initialize Right Column first to get container reference
+    with col2:
+        tab_process, tab_context, tab_graph_view = st.tabs(["🧠 Live Process", "📚 Context", "🕸️ Graph"])
+        
+        with tab_process:
+            from src.ui.process import render_process_monitor
+            # Container for live updates
+            process_container = st.empty()
+            
+            # Initial render
+            with process_container.container():
+                render_process_monitor()
+
+        with tab_context:
+            render_context_panel()
+            
+        with tab_graph_view:
+             st.markdown("Graph visualization coming soon...")
+
+    with col1:
+        st.subheader("💬 Chat")
         # Chat settings
         with st.expander("⚙️ Chat Settings", expanded=False):
             do_rerank = st.checkbox("Enable Re-ranking", value=True, help="Uses FlashRank to improve context relevance")
@@ -26,7 +46,7 @@ def render_chat_tab(db, ai):
             )
         
         # Display chat history
-        chat_container = st.container()
+        chat_container = st.container(height=600)
         with chat_container:
             for msg in st.session_state.chat_history:
                 with st.chat_message(msg["role"]):
@@ -39,105 +59,75 @@ def render_chat_tab(db, ai):
             # Add user message to history
             st.session_state.chat_history.append({"role": "user", "content": prompt})
             
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            
-            with st.chat_message("assistant"):
-                # REQ-UI-02: Status container for tool execution visibility
-                status_container = st.status("🤔 Thinking...", expanded=True)
+            with chat_container:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
                 
-                # Track tool usage for status updates
-                tools_used = []
-                
-                def update_status(tool_name: str, phase: str):
-                    """Callback for tool execution visibility."""
-                    if phase == "start":
-                        status_container.update(label=f"🔧 Using {tool_name}...")
-                        status_container.write(f"📍 Calling `{tool_name}`...")
-                    elif phase == "complete":
-                        status_container.write(f"✅ `{tool_name}` complete")
-                        tools_used.append(tool_name)
-                
-                try:
-                    agent = ResearchAgent(
-                        ai_engine=ai,
-                        database=db,
-                        project_id=st.session_state.selected_project_id,
-                        status_callback=update_status,
-                        do_rerank=do_rerank
-                    )
+                with st.chat_message("assistant"):
+                    message_placeholder = st.empty()
+                    status_placeholder = st.empty()
                     
-                    # Run the agent
-                    result = asyncio.run(agent.run(
-                        prompt,
-                        st.session_state.chat_history[:-1],  # Exclude current message
-                        reasoning_mode=reasoning_mode
-                    ))
+                    # Clear previous events for new run
+                    st.session_state.agent_events = []
                     
-                    # Update status to complete
-                    if tools_used:
-                        status_container.update(label=f"✨ Done (used: {', '.join(tools_used)})", state="complete", expanded=False)
-                    else:
-                        status_container.update(label="✨ Done", state="complete", expanded=False)
-                    
-                    # Check if it's a ReasoningResponse or AgentResponse
-                    if isinstance(result, ReasoningResponse):
-                        # Reasoning mode response
-                        if result.plan:
-                            with st.expander("📋 Plan", expanded=False):
-                                st.markdown(f"**Goal:** {result.plan.goal}")
-                                st.markdown(f"**Context needed:** {result.plan.context_needed}")
-                                st.markdown(f"**Verification:** {result.plan.verification_logic}")
+                    # Callback for Live Updates
+                    def on_event(event: dict):
+                        st.session_state.agent_events.append(event)
+                        # Live update the right column
+                        with process_container.container():
+                            render_process_monitor()
+                            
+                    try:
+                        status_placeholder.markdown("🤔 **Thinking...**")
                         
-                        # Show attempts
-                        if result.attempts:
-                            with st.expander(f"🔄 Code Attempts ({len(result.attempts)})", expanded=False):
-                                for attempt in result.attempts:
-                                    status_icon = "✅" if attempt.success else "❌"
-                                    st.markdown(f"**Attempt {attempt.attempt_number}** {status_icon}")
-                                    st.code(attempt.code, language="python")
-                                    if attempt.output:
-                                        st.text(f"Output: {attempt.output[:500]}")
+                        agent = ResearchAgent(
+                            ai_engine=ai,
+                            database=db,
+                            project_id=st.session_state.selected_project_id,
+                            do_rerank=do_rerank,
+                            event_callback=on_event
+                        )
                         
-                        # Final answer
-                        if result.success:
-                            assistant_message = f"**Result:**\n```\n{result.final_output}\n```"
+                        # Run the agent
+                        result = asyncio.run(agent.run(
+                            prompt,
+                            st.session_state.chat_history[:-1],
+                            reasoning_mode=reasoning_mode
+                        ))
+                        
+                        status_placeholder.empty()
+                        
+                        # Update final answer
+                        if isinstance(result, ReasoningResponse):
+                            if result.success:
+                                assistant_message = f"**Result:**\n```\n{result.final_output}\n```"
+                            else:
+                                assistant_message = f"❌ {result.error}\n\nLast output:\n```\n{result.final_output or 'No output'}\n```"
                         else:
-                            assistant_message = f"❌ {result.error}\n\nLast output:\n```\n{result.final_output or 'No output'}\n```"
-                    else:
-                        # Standard AgentResponse
-                        # Store context for display panel
-                        st.session_state.last_context = result.retrieved_chunks
-                        st.session_state.matched_concepts = result.matched_concepts
-                        assistant_message = result.answer
-                    
-                except Exception as e:
-                    status_container.update(label="❌ Error", state="error")
-                    assistant_message = f"I encountered an error: {str(e)}"
-                    import traceback
-                    print(f"Agent error: {traceback.format_exc()}")
-                
-                st.markdown(assistant_message)
-                
-                # Show model attribution
-                model_used = getattr(result, "model_name", "unknown")
-                st.caption(f"Generated by: `{model_used}`")
-                
-                st.session_state.chat_history.append({
-                    "role": "assistant", 
-                    "content": assistant_message,
-                    "model": model_used  # Store in history for persistence if needed later
-                })
-        
-        # Clear chat button
-        if st.session_state.chat_history:
-            if st.button("🗑️ Clear Chat", key="clear_chat"):
-                st.session_state.chat_history = []
-                st.session_state.last_context = []
-                st.rerun()
-    
-    with context_col:
-        render_context_panel()
+                            st.session_state.last_context = result.retrieved_chunks
+                            st.session_state.matched_concepts = result.matched_concepts
+                            assistant_message = result.answer
+                        
+                        message_placeholder.markdown(assistant_message)
+                        
+                        # Show model attribution
+                        model_used = getattr(result, "model_name", "unknown")
+                        st.caption(f"Generated by: `{model_used}`")
+                        
+                        st.session_state.chat_history.append({
+                            "role": "assistant", 
+                            "content": assistant_message,
+                            "model": model_used
+                        })
+                        
+                        # Trigger rerun to sync everything
+                        st.rerun()
+                        
+                    except Exception as e:
+                        status_placeholder.error("❌ Error")
+                        message_placeholder.error(f"I encountered an error: {str(e)}")
+                        import traceback
+                        print(f"Agent error: {traceback.format_exc()}")
 
 def render_context_panel():
     """Renders the right-hand context panel."""

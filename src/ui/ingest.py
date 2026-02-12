@@ -134,31 +134,53 @@ def process_upload(uploaded_file, db, ai):
                         print(f"Graph error: {e}")
                         return {"nodes": [], "edges": []}
                 
-                async def safe_embedding(text):
-                    try:
-                        response = await async_client.embeddings(model=ai.embed_model, prompt=text)
-                        return response["embedding"]
-                    except Exception as e:
-                        print(f"Embedding error: {e}")
-                        return []
+                # Batch Embedding Generation
+                async def generate_embeddings_batched(chunks, batch_size=10):
+                    embeddings = [None] * len(chunks)
+                    
+                    for i in range(0, len(chunks), batch_size):
+                        batch = chunks[i:i+batch_size]
+                        tasks = []
+                        indices = []
+                        
+                        for j, chunk in enumerate(batch):
+                            text = chunk.get('embedding_text', chunk['content'])
+                            tasks.append(async_client.embeddings(model=ai.embed_model, prompt=text))
+                            indices.append(i + j)
+                        
+                        try:
+                            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+                            
+                            for idx, res in zip(indices, batch_results):
+                                if isinstance(res, Exception):
+                                    print(f"Embedding error for chunk {idx}: {res}")
+                                    embeddings[idx] = []
+                                else:
+                                    embeddings[idx] = res["embedding"]
+                        except Exception as e:
+                             print(f"Batch error {i}: {e}")
+                             
+                    return embeddings
+
+                # Run parallel tasks
+                summary_task = asyncio.create_task(safe_summary())
+                graph_task = asyncio.create_task(safe_graph())
+                embeddings_task = asyncio.create_task(generate_embeddings_batched(chunks))
                 
-                # Run all tasks
-                summary_result = await safe_summary()
-                graph_result = await safe_graph()
-                embedding_results = await asyncio.gather(
-                    *[safe_embedding(c['content']) for c in chunks]
-                )
+                summary, graph_data, embeddings = await asyncio.gather(summary_task, graph_task, embeddings_task)
                 
-                return summary_result, graph_result, embedding_results
+                return summary, graph_data, embeddings
             
-            # Use existing event loop if available
+            # Execute async pipeline
             try:
                 loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                summary, graph_data, embeddings = loop.run_until_complete(run_ingestion_pipeline())
-            except RuntimeError:
+                if loop.is_running():
+                    summary, graph_data, embeddings = loop.run_until_complete(run_ingestion_pipeline())
+                else:
+                    summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
+            except RuntimeError as e:
+                # If loop is running and run_until_complete fails (shouldn't with nest_asyncio), fallback
+                print(f"Async runtime error: {e}, falling back to sync wait")
                 summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
             
             # Validate embeddings

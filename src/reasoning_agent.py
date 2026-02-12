@@ -77,14 +77,15 @@ class ReasoningAgent:
         self._notify("planning", "Generating plan...")
         logger.log_step("planning", "Generating plan...")
         
-        plan = await self._generate_plan(task, context)
+        plan, model_name = await self._generate_plan(task, context)
         
         if not plan:
             logger.log_error("Failed to generate plan")
             logger.finish("failed", "No plan generated")
             return ReasoningResponse(
                 success=False,
-                error="Failed to generate a plan for this task."
+                error="Failed to generate a plan for this task.",
+                model_name=model_name
             )
         
         logger.log_step("planning", f"Plan generated", {
@@ -102,7 +103,9 @@ class ReasoningAgent:
             logger.log_step("coding", f"Starting attempt {attempt_num}")
             
             # Generate code
-            code = await self._generate_code(task, plan, feedback)
+            code, coding_model = await self._generate_code(task, plan, feedback)
+            if coding_model:
+                model_name = coding_model  # Update model name to latest used
             
             if not code:
                 logger.log_error(f"Failed to generate code on attempt {attempt_num}")
@@ -155,7 +158,8 @@ class ReasoningAgent:
                             plan=plan,
                             final_code=code,
                             final_output=output,
-                            attempts=attempts
+                            attempts=attempts,
+                            model_name=model_name
                         )
                     else:
                         # Verification script failed (AssertionError or other error)
@@ -176,7 +180,8 @@ class ReasoningAgent:
                             plan=plan,
                             final_code=code,
                             final_output=output,
-                            attempts=attempts
+                            attempts=attempts,
+                            model_name=model_name
                         )
                     else:
                         feedback = f"Output doesn't meet basic requirements: {output}"
@@ -196,10 +201,11 @@ class ReasoningAgent:
             final_code=attempts[-1].code if attempts else None,
             final_output=attempts[-1].output if attempts else None,
             attempts=attempts,
-            error=f"Failed to solve task after {self.MAX_CODE_RETRIES} attempts"
+            error=f"Failed to solve task after {self.MAX_CODE_RETRIES} attempts",
+            model_name=model_name
         )
     
-    async def _generate_plan(self, task: str, context: str) -> Optional[ReasoningPlan]:
+    async def _generate_plan(self, task: str, context: str) -> tuple[Optional[ReasoningPlan], str]:
         """
         REQ-POETIQ-03: Generate a plan before coding.
         
@@ -248,12 +254,12 @@ Be concise and specific."""
             start_time = time.time()
             chat_logger.log_step("llm_call", "Calling LLM for plan generation", {"prompt_length": len(prompt)})
             
-            text = await self.ai._openrouter_generate(prompt)
+            text, model_name = await self.ai._openrouter_generate(prompt, return_model_name=True)
             
             duration = time.time() - start_time
             chat_logger.log_llm_call(prompt, text, duration, self.ai.model)
             
-            return self._parse_plan(text)
+            return self._parse_plan(text), model_name
             
         except Exception as e:
             chat_logger.log_error(f"LLM call failed in _generate_plan: {e}")
@@ -279,7 +285,7 @@ Be concise and specific."""
         task: str,
         plan: ReasoningPlan,
         feedback: str = ""
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], str]:
         """
         REQ-POETIQ-04, REQ-POETIQ-05: Generate code with self-verification.
         
@@ -308,7 +314,7 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
             start_time = time.time()
             chat_logger.log_step("llm_call", "Calling LLM for code generation", {"prompt_length": len(prompt)})
             
-            text = await self.ai._openrouter_generate(prompt)
+            text, model_name = await self.ai._openrouter_generate(prompt, return_model_name=True)
             
             duration = time.time() - start_time
             chat_logger.log_llm_call(prompt, text, duration, self.ai.model)
@@ -316,15 +322,15 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
             # Extract code from markdown block
             code_match = re.search(r'```python\s*(.*?)```', text, re.DOTALL | re.IGNORECASE)
             if code_match:
-                return code_match.group(1).strip()
+                return code_match.group(1).strip(), model_name
             
             # Try without markdown
             code_match = re.search(r'```\s*(.*?)```', text, re.DOTALL)
             if code_match:
-                return code_match.group(1).strip()
+                return code_match.group(1).strip(), model_name
             
             # Return raw text if no code block
-            return text.strip() if text.strip() else None
+            return (text.strip() if text.strip() else None), model_name
             
         except Exception as e:
             chat_logger.log_error(f"LLM call failed in _generate_code: {e}")

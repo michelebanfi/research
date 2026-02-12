@@ -5,9 +5,10 @@ import asyncio
 import re
 import hashlib
 from functools import lru_cache
-from typing import List, Any, Dict, Tuple, Optional
+from typing import List, Any, Dict, Tuple, Optional, Callable
 from openai import OpenAI, AsyncOpenAI
 from src.config import Config
+from src.cache import Cache
 
 # Try to import tenacity for retry logic
 try:
@@ -19,11 +20,11 @@ except ImportError:
 
 
 class AIEngine:
-    # REQ-IMP-08: Class-level embedding cache (shared across instances)
-    _embedding_cache: Dict[str, List[float]] = {}
-    _cache_max_size: int = Config.EMBEDDING_CACHE_SIZE
     
     def __init__(self):
+        # REQ-PERF-01: Initialize persistent cache
+        self.cache = Cache()
+        
         # LLM via OpenRouter
         self.model = Config.OPENROUTER_MODEL
         self.openai_client = OpenAI(
@@ -67,34 +68,18 @@ class AIEngine:
             "machine learning": ["ml"],
             "artificial intelligence": ["ai"],
         }
-    
-    def _get_cache_key(self, text: str) -> str:
-        """Generate a cache key for the embedding."""
-        return hashlib.md5(text.encode()).hexdigest()
-    
-    def _cache_embedding(self, text: str, embedding: List[float]):
-        """Cache an embedding with LRU eviction."""
-        if len(self._embedding_cache) >= self._cache_max_size:
-            # Simple eviction: remove first item (not true LRU, but sufficient)
-            first_key = next(iter(self._embedding_cache))
-            del self._embedding_cache[first_key]
-        self._embedding_cache[self._get_cache_key(text)] = embedding
-    
-    def _get_cached_embedding(self, text: str) -> Optional[List[float]]:
-        """Retrieve a cached embedding if it exists."""
-        return self._embedding_cache.get(self._get_cache_key(text))
 
     def generate_embedding(self, text: str) -> List[float]:
         """Generates embedding for a given text via Ollama. Uses cache if available."""
         # REQ-IMP-08: Check cache first
-        cached = self._get_cached_embedding(text)
-        if cached is not None:
+        cached = self.cache.get("embedding", text)
+        if cached:
             return cached
         
         try:
             response = self.ollama_client.embeddings(model=self.embed_model, prompt=text)
             embedding = response["embedding"]
-            self._cache_embedding(text, embedding)
+            self.cache.set("embedding", text, embedding)
             return embedding
         except Exception as e:
             print(f"Error generating embedding: {e}")
@@ -103,14 +88,14 @@ class AIEngine:
     async def generate_embedding_async(self, text: str) -> List[float]:
         """Generates embedding for a given text asynchronously via Ollama. Uses cache if available."""
         # REQ-IMP-08: Check cache first
-        cached = self._get_cached_embedding(text)
-        if cached is not None:
+        cached = self.cache.get("embedding", text)
+        if cached:
             return cached
         
         try:
             response = await self.ollama_async_client.embeddings(model=self.embed_model, prompt=text)
             embedding = response["embedding"]
-            self._cache_embedding(text, embedding)
+            self.cache.set("embedding", text, embedding)
             return embedding
         except Exception as e:
             print(f"Error generating embedding async: {e}")
@@ -610,10 +595,124 @@ If no merges needed, return: {{}}"""
             print(f"Error extracting graph metadata async: {e}")
             return {"nodes": [], "edges": []}
 
+    async def expand_query(self, query: str, num_variations: int = 3) -> List[str]:
+        """
+        REQ-IMP-09: Generates alternative search queries to improve retrieval recall.
+        Uses LLM to find synonyms and related technical terms.
+        """
+        try:
+            prompt = f"""Generate {num_variations} alternative search queries for the following user question to improve information retrieval from a technical knowledge base.
+    Focus on synonyms, technical terms, and alternative phrasings.
+    
+    User Question: "{query}"
+    
+    Return ONLY a JSON array of strings. Example: ["query variation 1", "query variation 2", "third variation"]"""
+            
+            content = await self._openrouter_generate(prompt)
+            clean_content = self._clean_json_string(content)
+            
+            import json
+            variations = json.loads(clean_content)
+            
+            if isinstance(variations, list):
+                # Return original + variations, unique
+                combined = [query] + [str(v) for v in variations if v]
+                return list(set(combined))
+            return [query]
+            
+        except Exception as e:
+            print(f"Error expanding query: {e}")
+            return [query]
+
     def extract_metadata_graph(self, text: str) -> Dict[str, Any]:
         """Synchronous wrapper for extract_metadata_graph_async."""
         return asyncio.run(self.extract_metadata_graph_async(text))
 
+
+    def _merge_search_results(self, all_results: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """
+        Merges results from multiple queries using a simplified Reciprocal Rank Fusion.
+        """
+        fused_scores = {}
+        doc_map = {}
+        
+        # RRF constant
+        k = 60
+        
+        for result_set in all_results:
+            for rank, doc in enumerate(result_set):
+                doc_id = doc['id']
+                if doc_id not in doc_map:
+                    doc_map[doc_id] = doc
+                
+                # RRF score: 1 / (k + rank)
+                score = 1.0 / (k + rank + 1)
+                
+                if doc_id in fused_scores:
+                    fused_scores[doc_id] += score
+                else:
+                    fused_scores[doc_id] = score
+        
+        # Sort by fused score
+        sorted_ids = sorted(fused_scores.keys(), key=lambda x: fused_scores[x], reverse=True)
+        
+        final_results = []
+        for doc_id in sorted_ids:
+            doc = doc_map[doc_id]
+            doc['rrf_score'] = fused_scores[doc_id]
+            final_results.append(doc)
+            
+        return final_results
+
+    async def retrieve_advanced(self, query: str, db_client: Any, project_id: str, limit: int = 10, callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> List[Dict[str, Any]]:
+        """
+        Orchestrates advanced retrieval:
+        1. Expand query
+        2. Parallel search for all variations
+        3. Merge results (RRF)
+        4. Rerank
+        """
+        if callback:
+             callback({"type": "search", "content": f"Exploring knowledge base for: '{query}'", "metadata": {"stage": "init"}})
+        
+        # 1. Expand Query
+        queries = await self.expand_query(query)
+        print(f"Expanded queries: {queries}")
+        
+        if callback and len(queries) > 1:
+             callback({"type": "search", "content": f"Expanded terms: {', '.join(queries[1:])}", "metadata": {"stage": "expansion", "queries": queries}})
+        
+        # 2. Parallel Search
+        search_tasks = []
+        for q in queries:
+            async def search_single(q_str):
+                # Generate embedding
+                embedding = await self.generate_embedding_async(q_str)
+                # Search DB (using synchronous client in async wrapper if needed)
+                # Note: db_client.search_vectors is sync. We should run it in executor or similar if blocking
+                # For now, running sync in loop
+                return db_client.search_vectors(embedding, match_threshold=0.3, project_id=project_id, match_count=limit*2)
+            
+            search_tasks.append(search_single(q))
+            
+        all_results = await asyncio.gather(*search_tasks)
+        
+        # 3. Merge Results
+        merged_results = self._merge_search_results(all_results)
+        
+        if callback:
+             callback({"type": "search", "content": f"Found {len(merged_results)} potential matches from multiple queries.", "metadata": {"stage": "merge", "count": len(merged_results)}})
+        
+        # 4. Rerank top candidates
+        # Take top 3x limit for reranking
+        candidates = merged_results[:limit*3]
+        final_results = self.rerank_results(query, candidates, top_k=limit)
+        
+        if callback:
+             callback({"type": "search", "content": f"Top {len(final_results)} most relevant documents selected.", "metadata": {"stage": "rerank", "top_k": len(final_results)}})
+        
+        return final_results
+        
     def rerank_results(self, query: str, results: List[Any], top_k: int = 5) -> List[Any]:
         """
         Re-ranks vector search results using FlashRank.

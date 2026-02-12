@@ -143,31 +143,23 @@ class DoclingParser:
         """
         Parses a document using Docling and HierarchicalChunker.
         Returns a list of chunks with enhanced metadata, reference flags, and table handling.
+        Implements Synthetic Hierarchical Chunking (Small-to-Big) by aggregating leaves into parent sections.
         """
         try:
             result = self.converter.convert(file_path)
             chunk_iter = self.chunker.chunk(result.document)
             
-            chunks = []
-            chunk_id_map = {} # Map Docling Chunk object ID to UUID
+            leaf_chunks = []
             
-            for i, chunk in enumerate(chunk_iter):
-                # Generate a UUID for this chunk
+            # Map of Heading Path (tuple) -> Parent Chunk Data
+            # This allows us to aggregate content for sections
+            section_map = {} 
+            
+            docling_chunks = list(chunk_iter)
+            
+            for i, chunk in enumerate(docling_chunks):
                 chunk_uuid = str(uuid.uuid4())
-                chunk_id_map[id(chunk)] = chunk_uuid
                 
-                # Resolve parent if available
-                parent_chunk_id = None
-                if hasattr(chunk, 'parent') and chunk.parent:
-                    parent_chunk_id = chunk_id_map.get(id(chunk.parent))
-                
-                # Resolve level/depth
-                chunk_level = 0
-                if hasattr(chunk, 'level'):
-                    chunk_level = chunk.level
-                elif hasattr(chunk, 'depth'):
-                    chunk_level = chunk.depth
-
                 # REQ-02: Extract granular metadata
                 metadata = self._extract_granular_metadata(chunk, i)
                 
@@ -177,9 +169,49 @@ class DoclingParser:
                 # REQ-07: Handle tables semantically
                 is_table = self._is_table_chunk(chunk)
                 
-                # REQ-NLP-01: Detect key claim sections (abstract, conclusion, results)
+                # REQ-NLP-01: Detect key claim sections
                 key_claim_section = self._detect_key_claim_section(metadata)
                 
+                # Determine Hierarchy from Headings
+                headings = metadata.get("headings", [])
+                parent_chunk_id = None
+                chunk_level = len(headings)
+                
+                # Create/Update Parent Sections
+                if headings:
+                    # The immediate parent is the section defined by the full headings path
+                    parent_path = tuple(headings)
+                    
+                    # Ensure all ancestor sections exist
+                    current_path = []
+                    last_parent_id = None
+                    
+                    for h in headings:
+                        current_path.append(h)
+                        path_tuple = tuple(current_path)
+                        
+                        if path_tuple not in section_map:
+                            section_map[path_tuple] = {
+                                "id": str(uuid.uuid4()),
+                                "content_parts": [],
+                                "chunk_level": len(current_path) - 1, # 0-indexed levels for sections
+                                "parent_chunk_id": last_parent_id,
+                                "headings": list(path_tuple),
+                                "is_reference": False # Default, updated if children are refs
+                            }
+                        
+                        # Add this chunk's content to the section (aggregation)
+                        section_map[path_tuple]["content_parts"].append(chunk.text)
+                        
+                        # Set reference flag if children are references
+                        if is_reference:
+                            section_map[path_tuple]["is_reference"] = True
+                            
+                        last_parent_id = section_map[path_tuple]["id"]
+                    
+                    # The leaf's parent is the deepest section
+                    parent_chunk_id = section_map[parent_path]["id"]
+
                 chunk_data = {
                     "id": chunk_uuid,
                     "parent_chunk_id": parent_chunk_id,
@@ -191,23 +223,52 @@ class DoclingParser:
                     "is_table": is_table,
                 }
                 
-                # REQ-NLP-01: Mark section for key claim extraction
                 if key_claim_section:
                     chunk_data["metadata"]["key_claim_section"] = key_claim_section
                 
-                # REQ-07: For tables, we'll also store a summary hint for embedding
                 if is_table:
-                    # The AI engine will generate a summary for embedding
-                    # but we preserve raw content for display
                     chunk_data["metadata"]["is_table"] = True
                     chunk_data["metadata"]["table_raw_content"] = chunk.text
-                    chunk_data["embedding_text"] = f"[TABLE] {chunk.text[:500]}"  # Truncated for embedding
+                    chunk_data["embedding_text"] = f"[TABLE] {chunk.text[:500]}"
                 
-                chunks.append(chunk_data)
+                leaf_chunks.append(chunk_data)
+            
+            # Finalize Output List: Sections + Leaves
+            final_chunks = []
+            
+            # Add Sections (Parents)
+            # We sort by level so parents usually come before children, though not strictly required
+            sorted_sections = sorted(section_map.items(), key=lambda item: len(item[0]))
+            
+            for path, sec in sorted_sections:
+                # Construct combined content
+                # We limit the size of parent chunks to avoid context overflow? 
+                # For now, store full text. Retrieval matching will hit leaves, then fetch this parent.
+                combined_content = "\n\n".join(sec["content_parts"])
                 
-            return chunks
+                final_chunks.append({
+                    "id": sec["id"],
+                    "parent_chunk_id": sec["parent_chunk_id"],
+                    "chunk_level": sec["chunk_level"],
+                    "content": combined_content,
+                    "chunk_index": -1, # Indicating it's a synthetic chunk
+                    "metadata": {
+                        "headings": sec["headings"],
+                        "doc_item_type": "section",
+                        "is_synthetic": True
+                    },
+                    "is_reference": sec["is_reference"],
+                    "is_table": False
+                })
+                
+            # Add Leaves
+            final_chunks.extend(leaf_chunks)
+                
+            return final_chunks
         except Exception as e:
             print(f"Error parsing document {file_path}: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
 class ASTParser:

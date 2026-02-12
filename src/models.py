@@ -4,9 +4,8 @@ REQ-POETIQ-03, REQ-POETIQ-05: Data models for Reasoning Mode.
 Pydantic models for structured reasoning with goal/plan phase and verification.
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
-
 
 @dataclass
 class ReasoningPlan:
@@ -47,7 +46,20 @@ class ReasoningResponse:
     final_output: Optional[str] = None
     attempts: List[CodeAttempt] = field(default_factory=list)
     error: Optional[str] = None
+    model_name: str = "unknown"
     
     @property
     def total_attempts(self) -> int:
         return len(self.attempts)
+
+
+@dataclass
+class AgentEvent:
+    """
+    REQ-UI-OBS-01: structured event for UI visualization.
+    """
+    type: str  # "thought", "tool", "result", "error", "search", "gen"
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+    timestamp: float = field(default_factory=lambda: __import__("time").time())
+

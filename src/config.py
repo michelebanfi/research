@@ -28,6 +28,10 @@ class Config:
     
     # REQ-IMP-08: Embedding cache size
     EMBEDDING_CACHE_SIZE = int(os.environ.get("EMBEDDING_CACHE_SIZE", "1000"))
+    
+    # REQ-PERF-01: Caching
+    CACHE_ENABLED = os.environ.get("CACHE_ENABLED", "True").lower() == "true"
+    CACHE_TTL = int(os.environ.get("CACHE_TTL", "3600")) # 1 hour default
 
     # RERANK-01: Re-ranking model name
     # Options: ms-marco-MiniLM-L-12-v2 (default), rank-T5-flan, rank_zephyr_7b_v1_full
