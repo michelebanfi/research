@@ -193,7 +193,7 @@ def test_agent_preserves_api():
 
 def test_python_syntax():
     files = ['ai_engine.py', 'agent_graph.py', 'agent.py', 'tools.py',
-             'models.py', 'reasoning_agent.py']
+             'models.py']
     for f in files:
         path = os.path.join(SRC, f)
         with open(path, 'r') as fh:

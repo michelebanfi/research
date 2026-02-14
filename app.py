@@ -108,12 +108,15 @@ with st.sidebar:
 
 # --- Main Content Area with Tabs ---
 if st.session_state.get("selected_project_id"):
-    tab_chat, tab_ingest, tab_graph = st.tabs(["💬 Chat", "📥 Ingest Files", "🕸️ Knowledge Graph"])
+    tab_chat, tab_ingest, tab_graph, tab_arch = st.tabs([
+        "💬 Chat", "📥 Ingest Files", "🕸️ Knowledge Graph", "🏗️ Agent Graph"
+    ])
     
     # Imports for UI modules
     from src.ui.chat import render_chat_tab
     from src.ui.ingest import render_ingest_tab
     from src.ui.graph import render_graph_tab
+    from src.ui.graph_view import render_graph_tab as render_agent_graph_tab
     
     with tab_chat:
         render_chat_tab(db, ai)
@@ -123,6 +126,9 @@ if st.session_state.get("selected_project_id"):
         
     with tab_graph:
         render_graph_tab(db)
+
+    with tab_arch:
+        render_agent_graph_tab()
 
 else:
     st.info("👈 Please select or create a project from the sidebar to get started.")

@@ -16,7 +16,7 @@ def render_chat_tab(db, ai):
     
     # Initialize Right Column first to get container reference
     with col2:
-        tab_process, tab_context, tab_graph_view = st.tabs(["🧠 Live Process", "📚 Context", "🕸️ Graph"])
+        tab_process, tab_context = st.tabs(["🧠 Live Process", "📚 Context"])
         
         with tab_process:
             from src.ui.process import render_process_monitor
@@ -29,9 +29,6 @@ def render_chat_tab(db, ai):
 
         with tab_context:
             render_context_panel()
-            
-        with tab_graph_view:
-             st.markdown("Graph visualization coming soon...")
 
     with col1:
         st.subheader("💬 Chat")
@@ -87,9 +84,13 @@ def render_chat_tab(db, ai):
                             do_rerank=do_rerank,
                             event_callback=on_event
                         )
+                        # Store graph for visualization tab
+                        st.session_state.agent_graph = agent._graph
                         
-                        # Run the agent
-                        result = asyncio.run(agent.run(
+                        # Run the agent — use existing event loop to avoid
+                        # unclosed-loop ResourceWarnings from asyncio.run()
+                        loop = asyncio.get_event_loop()
+                        result = loop.run_until_complete(agent.run(
                             prompt,
                             st.session_state.chat_history[:-1],
                             reasoning_mode=reasoning_mode

@@ -319,7 +319,7 @@ class ToolRegistry:
         
         for attempt in range(max_retries):
             try:
-                from duckduckgo_search import DDGS
+                from ddgs import DDGS
                 
                 results = []
                 with DDGS() as ddgs:
