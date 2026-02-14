@@ -1,7 +1,9 @@
- 
-   
-Now let me examine the remaining critical files:
-Now I have a complete picture of the codebase. Let me provide a comprehensive deep analysis.
+  
+ I need to access the repository structure and code. Let me use the raw GitHub URL format to explore the repository structure and contents.   
+  I can see the repository structure. Let me now fetch the main code files to analyze them. I'll get the app.py, schema.sql, synonyms.json, and explore the src directory.     
+   Now let me fetch the core source files to analyze the implementation:       
+   Now let me fetch the remaining important files to complete the analysis:       
+   Now I have a comprehensive view of the codebase. Let me provide a deep analysis with actionable improvements.
 
 ---
 
@@ -9,536 +11,539 @@ Now I have a complete picture of the codebase. Let me provide a comprehensive de
 
 ## Executive Summary
 
-This is a sophisticated **GraphRAG (Graph Retrieval-Augmented Generation)** system with a Streamlit frontend, featuring hybrid retrieval (vector + graph), AST-based code parsing, a ReAct-style agent loop, and an advanced "Plan & Code" reasoning mode. The architecture is well-structured with clear separation of concerns.
+Your Local-Brain Research Assistant is a sophisticated **GraphRAG (Graph Retrieval-Augmented Generation)** system with impressive architectural decisions. You've implemented a hybrid retrieval system (vector + graph), ReAct-style agentic reasoning, code-aware ingestion for Python files, and even a "Plan & Code" reasoning mode. 
+
+However, there are **critical efficiency bottlenecks** preventing optimal LLM reasoning over your knowledge base. The most impactful improvements revolve around **contextual compression**, **intelligent retrieval routing**, and **knowledge organization strategies** that most RAG systems overlook.
 
 ---
 
-## 🐛 Critical Bugs & Logical Flaws
+## 1. Critical Logical Flaws & Bugs
 
-### 1. **Race Condition in Session State Management** (app.py)
-**Location:** Lines 120-130, 200-210
+### Bug 1: Async Event Loop Corruption (HIGH SEVERITY)
+**Location:** `app.py` lines 58-75, `ai_engine.py` lines 45-46
 
-The agent is instantiated fresh on every chat turn but `st.session_state` persists across reruns. However, the `ResearchAgent` is created inside the chat input handler without checking if one already exists. While not catastrophic due to Streamlit's execution model, this causes:
-- **Memory leaks**: New agent instances created per message
-- **Callback registration issues**: Multiple status callbacks could fire
-
-**Fix:**
+**Issue:** You're applying `nest_asyncio` globally and creating multiple event loop workarounds. In `app.py`, you have:
 ```python
-# In session state init
-if "agent" not in st.session_state:
-    st.session_state.agent = ResearchAgent(...)
-
-# Reuse existing agent
-agent = st.session_state.agent
+import nest_asyncio
+nest_asyncio.apply()
+# ... later ...
+asyncio.run(agent.run(...))  # This is inside a Streamlit context that already has a loop
 ```
 
-### 2. **Async Event Loop Corruption** (app.py, ingestion section)
-**Location:** Lines 335-365
+**Why it breaks:** Streamlit runs in an async environment. `asyncio.run()` creates a new loop, but `nest_asyncio` patches it to allow nesting. However, your `AIEngine` creates its own async clients, and the ingestion pipeline manually manages loops with complex try/except logic.
 
-The code attempts to handle `asyncio` in Streamlit (which already runs an event loop) with `nest_asyncio`, but then manually creates new event loops:
-
+**Fix:** Use a consistent async strategy:
 ```python
-try:
-    loop = asyncio.get_event_loop()
-    if loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    summary, graph_data, embeddings = loop.run_until_complete(run_ingestion_pipeline())
-except RuntimeError:
-    summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
+# In app.py - remove nest_asyncio, use the existing loop
+import asyncio
+
+def get_or_create_event_loop():
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.new_event_loop()
+
+# Then use the loop directly instead of asyncio.run()
+loop = get_or_create_event_loop()
+result = loop.run_until_complete(agent.run(...))
 ```
 
-**Problem:** This is fragile and can cause "Event loop is already running" or "Cannot run nested event loop" errors. The mixing of `run_until_complete` and `asyncio.run` is dangerous.
+### Bug 2: GraphRAG Node Resolution Fails on Type Mismatches (MEDIUM)
+**Location:** `schema.sql` lines 140-165, `ai_engine.py` lines 304-320
 
-**Fix:** Use `asyncio.create_task()` and `asyncio.gather()` within the existing loop, or use `st.cache_data` with async properly.
+**Issue:** Your `store_graph_data` function uses `(name, type)` unique constraints, but your synonym resolution in `_resolve_entity_synonyms` only lowercases names, ignoring types. This causes:
+- "Python" (type: Language) and "Python" (type: Tool) to collide incorrectly
+- Or worse, edges pointing to wrong entity types
 
-### 3. **SQL Injection Risk via RPC** (database.py)
-**Location:** `search_nodes_by_name` method
+**Evidence:** In `ai_engine.py`, the normalization only handles `name` mapping, not type-aware disambiguation.
 
+**Fix:** Implement type-aware canonicalization:
 ```python
-for term in query_terms:
-    response = self.client.table("nodes").select(
-        "id, name, type"
-    ).ilike("name", f"%{term}%").limit(limit).execute()
+def _get_canonical_key(self, name: str, entity_type: str) -> str:
+    """Create unique key combining normalized name and type."""
+    normalized_name = self._resolve_entity_synonyms(name)
+    return f"{entity_type.lower()}:{normalized_name}"
 ```
 
-While Supabase client uses parameterized queries, the `ilike` with user-provided `term` could be exploited if `term` contains wildcards (`%`, `_`). More critically, there's **no input sanitization** on `query_terms` before passing to the database.
+### Bug 3: Re-ranking Cache Misses (PERFORMANCE)
+**Location:** `ai_engine.py` lines 418-450
 
-**Fix:** Sanitize terms: `term.replace('%', r'\%').replace('_', r'\_')` and use escape clauses.
-
-### 4. **Missing Transaction Rollback** (database.py)
-**Location:** All methods
-
-The Supabase client operations don't handle partial failures. If `store_chunks` succeeds but `store_keywords` fails during ingestion, the database is left in an inconsistent state.
-
-**Fix:** Implement transaction wrapper or use Supabase's RPC for atomic operations.
-
-### 5. **Critical Security Bypass in Sandbox** (sandbox.py)
-**Location:** `_scan_for_dangerous_imports`
-
-The AST scanner checks for `ast.Import` and `ast.ImportFrom`, but **misses dynamic imports**:
-
+**Issue:** `rerank_results` instantiates `Ranker()` on every call:
 ```python
-# This bypasses the scanner:
-__import__('os').system('rm -rf /')
-# Or:
-import importlib
-mod = importlib.import_module('os')
+ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="./.cache")
 ```
 
-While `__import__` is in `BLOCKED_BUILTINS`, the check only catches direct calls, not assignments or indirect usage.
+This downloads/loads the model every time. With 100 queries, you load the model 100 times.
 
-**Fix:** Add pattern matching for `importlib.import_module` and ban `__import__` entirely in the AST walk, not just in Call nodes.
-
-### 6. **Infinite Recursion Risk** (ai_engine.py)
-**Location:** `generate_summary_async`
-
+**Fix:** Cache the ranker as a singleton:
 ```python
-# Recursively call generate_summary_async using await
-return await self.generate_summary_async(combined_summary)
-```
-
-If summaries don't compress sufficiently, this could recurse deeply or infinitely.
-
-**Fix:** Add a recursion depth limit or iteration counter.
-
-### 7. **Wrong File Path Construction** (app.py)
-**Location:** Line 270
-
-```python
-file_url = f"app/static/{relative_path}"
-```
-
-This assumes the app runs from a specific directory. If run from elsewhere, file links break.
-
-**Fix:** Use `Path(__file__).parent` to construct absolute paths.
-
----
-
-## 🏗️ Architecture & Organization Improvements
-
-### 1. **Modularize the Monolithic `app.py`**
-**Current:** 500+ lines of mixed UI, business logic, and async handling.
-
-**Recommended Structure:**
-```
-src/
-├── ui/
-│   ├── __init__.py
-│   ├── components.py      # Reusable Streamlit components
-│   ├── chat_tab.py        # Chat interface logic
-│   ├── ingest_tab.py      # File upload & processing
-│   └── graph_tab.py       # Knowledge graph visualization
-├── core/
-│   ├── agent.py           # Keep existing
-│   ├── reasoning_agent.py # Keep existing
-│   └── pipeline.py        # Ingestion pipeline orchestration
-└── app.py                 # Minimal entry point
-```
-
-### 2. **Implement Repository Pattern for Database**
-**Current:** `DatabaseClient` mixes query logic with business logic.
-
-**Improvement:** Abstract data access:
-```python
-# repositories/node_repository.py
-class NodeRepository:
-    def get_by_concepts(self, concepts: List[str]) -> List[Node]:
-        ...
-
-# repositories/chunk_repository.py  
-class ChunkRepository:
-    def semantic_search(self, embedding: List[float], ...) -> List[Chunk]:
-        ...
-```
-
-### 3. **Add Service Layer for Business Logic**
-Separate domain logic from database operations:
-```python
-# services/ingestion_service.py
-class IngestionService:
-    async def ingest_file(self, file_path: str, project_id: str) -> IngestionResult:
-        # Orchestrate parsing, AI processing, storage
-        ...
-```
-
-### 4. **Implement Event-Driven Architecture**
-Use an event bus for decoupled operations:
-```python
-# events.py
-@dataclass
-class FileIngested:
-    file_id: str
-    project_id: str
-
-# Handler automatically updates graph, runs clustering, etc.
-```
-
----
-
-## 🧠 Prompt Engineering & LLM Efficiency
-
-### 1. **Implement Structured Output (JSON Mode)**
-**Current:** Regex parsing of LLM outputs (fragile).
-
-**Improvement:** Use OpenRouter's JSON mode or function calling:
-```python
-# In ai_engine.py
-async def generate_plan_structured(self, task: str) -> ReasoningPlan:
-    response = await self.async_openai_client.chat.completions.create(
-        model=self.model,
-        messages=[...],
-        response_format={"type": "json_object"},  # Force JSON
-        functions=[{
-            "name": "create_plan",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "context_needed": {"type": "string"},
-                    "goal": {"type": "string"},
-                    "verification_logic": {"type": "string"}
-                },
-                "required": ["goal", "verification_logic"]
-            }
-        }],
-        function_call={"name": "create_plan"}
-    )
-```
-
-### 2. **Add Prompt Versioning & A/B Testing**
-Create a prompt registry:
-```python
-# prompts/registry.py
-PROMPTS = {
-    "graph_extraction": {
-        "v1": "Analyze the following technical content...",
-        "v2": "Extract entities and relationships from this academic text..."
-    }
-}
-```
-
-### 3. **Implement Few-Shot Examples**
-Add example-based prompting for complex tasks:
-```python
-GRAPH_EXTRACTION_EXAMPLES = [
-    {
-        "input": "BERT uses the Transformer architecture...",
-        "output": {
-            "nodes": [
-                {"name": "BERT", "type": "Model"},
-                {"name": "Transformer", "type": "Architecture"}
-            ],
-            "edges": [
-                {"source": "BERT", "target": "Transformer", "relation": "uses"}
-            ]
-        }
-    }
-]
-```
-
-### 4. **Dynamic Prompt Compression**
-Implement `llmlingua` or similar for context compression:
-```python
-from llmlingua import PromptCompressor
-
-compressor = PromptCompressor()
-compressed_prompt = compressor.compress_prompt(
-    context=long_context,
-    instruction="Answer based on context",
-    question=query,
-    rate=0.5  # Compress to 50%
-)
-```
-
-### 5. **Query Expansion for Better Retrieval**
-```python
-async def expand_query(self, query: str) -> List[str]:
-    """Generate query variations for better recall."""
-    prompt = f"Generate 3 paraphrases of: {query}"
-    variations = await self._openrouter_generate(prompt)
-    return [query] + parse_variations(variations)
-```
-
----
-
-## 🔧 Advanced Techniques to Implement
-
-### 1. **Hierarchical Indexing (Parent-Child Chunks)**
-**Current:** Flat chunking loses document structure.
-
-**Improvement:** Implement parent-child relationships:
-```sql
--- Add to schema
-ALTER TABLE file_chunks ADD COLUMN parent_chunk_id UUID REFERENCES file_chunks(id);
-ALTER TABLE file_chunks ADD COLUMN chunk_level INTEGER DEFAULT 0; -- 0=parent, 1=child
-```
-
-Retrieve parent context when child chunks match.
-
-### 2. **Hypothetical Document Embeddings (HyDE)**
-```python
-async def retrieve_with_hyde(self, query: str):
-    # Generate hypothetical answer
-    hypothetical = await self.ai.generate(f"Answer this: {query}")
-    # Embed the hypothetical answer (usually richer than query)
-    embedding = await self.ai.generate_embedding(hypothetical)
-    return self.db.search_vectors(embedding, ...)
-```
-
-### 3. **Self-Querying Retrieval**
-Use LLM to extract structured filters from natural language:
-```python
-# User: "papers about transformers from 2023"
-# LLM extracts: {"topic": "transformers", "year": 2023}
-# Use metadata filters in vector search
-```
-
-### 4. **Re-ranking with Cross-Encoders**
-You have FlashRank (good!), but consider:
-- **ColBERT** for late interaction (better than bi-encoders)
-- **Cohere Rerank** API if using cloud models
-
-### 5. **Knowledge Graph Embeddings**
-Use **TransE** or **RotatE** to embed graph structure:
-```python
-# Train embeddings on nodes/edges
-# Use for link prediction and enhanced retrieval
-```
-
-### 6. **Adaptive Retrieval (Route Different Strategies)**
-```python
-class AdaptiveRetriever:
-    async def retrieve(self, query: str):
-        query_type = await self.classify_query(query)
-        if query_type == "factual":
-            return await self.vector_search(query)
-        elif query_type == "relational":
-            return await self.graph_traversal(query)
-        elif query_type == "analytical":
-            return await self.hybrid_with_summary(query)
-```
-
-### 7. **Cache-Augmented Generation (CAG)**
-Pre-load relevant knowledge into KV cache for faster inference:
-```python
-# For frequently accessed projects, cache the context
-cached_context = await self.build_knowledge_cache(project_id)
-response = await self.ai.generate(query, context=cached_context)
-```
-
-### 8. **Multi-Agent Debate**
-For complex reasoning, use multiple agents:
-```python
-# Agent 1: Retrieve evidence
-# Agent 2: Critique evidence
-# Agent 3: Synthesize final answer
-```
-
----
-
-## 📊 Knowledge Organization Enhancements
-
-### 1. **Automatic Taxonomy Generation**
-Instead of flat keywords, build hierarchical taxonomies:
-```python
-# Use LLM to categorize concepts
-# Machine Learning -> Deep Learning -> Transformers -> BERT
-```
-
-### 2. **Temporal Knowledge Tracking**
-Add versioning to facts:
-```sql
-ALTER TABLE nodes ADD COLUMN valid_from TIMESTAMP;
-ALTER TABLE nodes ADD COLUMN valid_until TIMESTAMP;
-ALTER TABLE nodes ADD COLUMN superseded_by UUID;
-```
-
-### 3. **Confidence Scoring**
-Track extraction confidence:
-```sql
-ALTER TABLE edges ADD COLUMN confidence FLOAT;
-ALTER TABLE edges ADD COLUMN extraction_method VARCHAR; -- 'llm', 'rule', 'human'
-```
-
-### 4. **Semantic Clustering Enhancement**
-Your `run_semantic_clustering` is good, but add:
-- **Community Detection** (Louvain algorithm) for better clustering
-- **Auto-labeling** of clusters using LLM
-- **Hierarchical topic modeling**
-
-### 5. **Citation Graph Analysis**
-Parse actual citations between papers:
-```python
-# Extract "cited by" relationships from PDFs
-# Build PageRank-style importance scores for papers
-```
-
----
-
-## ⚡ Performance Optimizations
-
-### 1. **Batch Embedding Generation**
-Current: Sequential in `run_ingestion_pipeline`
-```python
-# Use batch API if available, or concurrent with semaphore
-async def generate_embeddings_batch(self, texts: List[str], batch_size=10):
-    embeddings = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i+batch_size]
-        tasks = [self.generate_embedding_async(t) for t in batch]
-        embeddings.extend(await asyncio.gather(*tasks))
-    return embeddings
-```
-
-### 2. **Vector Quantization**
-Reduce embedding storage by 75% with minimal accuracy loss:
-```python
-# Use Product Quantization (PQ) or scalar quantization
-# Store as INT8 instead of FLOAT32
-```
-
-### 3. **Graph Sampling for Large Projects**
-For projects with >10k nodes:
-```python
-def get_project_graph_sample(self, project_id: str, sample_size: int = 500):
-    # Use random walk sampling or degree-based sampling
-    # instead of LIMIT which biases to early inserted nodes
-```
-
-### 4. **Connection Pooling**
-Supabase client should use connection pooling for high throughput.
-
-### 5. **Lazy Loading for Chat History**
-Don't load full chat history into context; use summarization:
-```python
-async def compress_chat_history(self, history: List[Dict]) -> str:
-    if len(history) > 10:
-        # Summarize older messages
-        old_part = history[:-5]
-        summary = await self.ai.summarize_conversation(old_part)
-        return [summary] + history[-5:]
-```
-
----
-
-## 🛡️ Security Hardening
-
-### 1. **Input Validation Layer**
-```python
-from pydantic import BaseModel, validator
-
-class QueryInput(BaseModel):
-    query: str
-    project_id: UUID
+class AIEngine:
+    _ranker = None
     
-    @validator('query')
-    def validate_query_length(cls, v):
-        if len(v) > 10000:
-            raise ValueError("Query too long")
-        return v.strip()
+    def rerank_results(self, query, results, top_k=5):
+        if not self._ranker:
+            self._ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="./.cache")
+        # ... use self._ranker
 ```
 
-### 2. **Rate Limiting**
-Add per-user rate limiting on API endpoints.
+### Bug 4: Chat History Context Leakage (LOGIC)
+**Location:** `agent.py` lines 140-150
 
-### 3. **Content Security Policy**
-For the Streamlit app, add CSP headers to prevent XSS.
+**Issue:** You truncate chat history to last 5 messages for the agent, but you don't filter out system/tool messages properly. When the agent uses tools, the observation format isn't standardized, causing context pollution.
 
-### 4. **Sandbox Enhancement**
-Current sandbox is good but add:
-- **Resource limits** (memory, CPU)
-- **Network isolation** (block all outbound)
-- **Filesystem restrictions** (chroot or tmpfs only)
+**Impact:** The LLM gets confused by malformed conversation history after 2-3 tool calls.
 
 ---
 
-## 📝 Code Quality Improvements
+## 2. Efficiency Bottlenecks in LLM Reasoning
 
-### 1. **Type Hints Completion**
-Many functions lack return type hints (e.g., `generate_summary`).
+### Critical Issue: Naive Context Stuffing
+**Current behavior:** You retrieve 5-10 chunks, re-rank them, and stuff them all into the prompt with metadata headers.
 
-### 2. **Error Handling Consistency**
-Some places catch generic `Exception`, others are specific. Standardize on:
-```python
-from tenacity import retry, stop_after_attempt, wait_exponential
+**Problem:** This ignores the **"Lost in the Middle"** phenomenon (Stanford, 2023). LLMs ignore context in the middle of long prompts. Your chunks compete for attention.
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def resilient_operation(self):
-    ...
+**Solution: Hierarchical Context Synthesis**
+
+Instead of:
+```
+[Source 1] (relevance: 0.92): Content...
+[Source 2] (relevance: 0.89): Content...
+[Source 3] (relevance: 0.85): Content...
 ```
 
-### 3. **Logging Infrastructure**
-Replace `print()` statements with structured logging:
+Implement **Iterative Context Distillation**:
+1. **First pass:** LLM summarizes each chunk to 1 sentence (offline, during ingestion)
+2. **Retrieval:** Fetch summaries first, select top 3 most relevant
+3. **Expansion:** Only for those 3, fetch full content + 2-hop graph neighbors
+4. **Synthesis:** LLM creates a "context brief" before answering
+
+**Implementation:**
 ```python
-import structlog
-logger = structlog.get_logger()
+# Add to schema.sql
+alter table file_chunks add column summary text;
 
-logger.info("ingestion_complete", file_id=file_id, chunks_count=len(chunks))
-```
-
-### 4. **Testing Coverage**
-Add:
-- Unit tests for `ASTParser` (test on complex Python files)
-- Integration tests for the full ingestion pipeline
-- Property-based testing for the sandbox (Hypothesis)
-- Load tests for concurrent embedding generation
-
-### 5. **Documentation**
-Add docstrings following Google style:
-```python
-def search_vectors(self, query_embedding: List[float], ...) -> List[Dict]:
-    """
-    Performs semantic search over file chunks.
+# In ai_engine.py - new method
+async def synthesize_context(self, chunks: List[Dict]) -> str:
+    """Create a condensed context brief from retrieved chunks."""
+    summaries = [c.get('summary', c['content'][:200]) for c in chunks]
     
-    Args:
-        query_embedding: The query vector (1024-dim for nomic-embed-text)
-        match_threshold: Minimum cosine similarity (0-1)
-        
-    Returns:
-        List of chunks with similarity scores and metadata
-        
-    Raises:
-        DatabaseError: If Supabase connection fails
+    synthesis_prompt = f"""Synthesize these document excerpts into a coherent knowledge brief:
+{chr(10).join(f"- {s}" for s in summaries)}
+
+Identify: 1) Key entities mentioned, 2) Relationships between them, 3) Any contradictions."""
+    
+    return await self._openrouter_generate(synthesis_prompt)
+```
+
+### Critical Issue: Graph Traversal Depth Blindness
+**Current behavior:** `get_related_concepts` only does 1-hop traversal.
+
+**Problem:** Knowledge graphs have **small-world properties**. 1-hop misses indirect but crucial connections. However, naive deep traversal causes **semantic drift** (retrieving irrelevant distant nodes).
+
+**Solution: Semantic Bounded Traversal**
+
+```python
+async def semantic_traversal(
+    self, 
+    start_node_ids: List[str], 
+    query_embedding: List[float],
+    max_depth: int = 3,
+    similarity_threshold: float = 0.7
+) -> List[Dict]:
     """
+    Traverse graph but prune paths where node embeddings diverge from query.
+    Prevents semantic drift while capturing multi-hop relationships.
+    """
+    visited = set()
+    frontier = [(node_id, 0) for node_id in start_node_ids]
+    relevant_nodes = []
+    
+    while frontier:
+        current_id, depth = frontier.pop(0)
+        if current_id in visited or depth > max_depth:
+            continue
+        visited.add(current_id)
+        
+        # Get node content/embedding
+        node_data = await self.db.get_node_with_chunk(current_id)
+        if not node_data:
+            continue
+            
+        # Semantic pruning: only expand if similar to query
+        node_embedding = await self.generate_embedding_async(node_data['content'])
+        similarity = cosine_similarity(query_embedding, node_embedding)
+        
+        if similarity > similarity_threshold:
+            relevant_nodes.append(node_data)
+            # Add neighbors to frontier
+            neighbors = await self.db.get_neighbors(current_id)
+            frontier.extend([(n, depth + 1) for n in neighbors])
+    
+    return relevant_nodes
+```
+
+### Critical Issue: Redundant Embedding Generation
+**Current behavior:** Every query generates a new embedding, even for identical or semantically similar queries.
+
+**Optimization:** Implement **Query Embedding Cache with Fuzzy Matching**:
+
+```python
+class AIEngine:
+    _query_embedding_cache = {}
+    
+    async def generate_embedding_async(self, text: str) -> List[float]:
+        # Check exact cache
+        cache_key = hashlib.md5(text.encode()).hexdigest()
+        if cache_key in self._embedding_cache:
+            return self._embedding_cache[cache_key]
+            
+        # Check fuzzy cache (semantic similarity > 0.95)
+        text_embedding = await self._generate_fresh(text)
+        for cached_text, cached_emb in self._query_embedding_cache.items():
+            if cosine_similarity(text_embedding, cached_emb) > 0.95:
+                return cached_emb
+                
+        self._embedding_cache[cache_key] = text_embedding
+        return text_embedding
 ```
 
 ---
 
-## 🎯 Priority Roadmap
+## 3. Knowledge Organization Improvements
 
-### Phase 1: Critical Fixes (Week 1)
-1. Fix async event loop handling in `app.py`
-2. Harden sandbox security (importlib bypass)
-3. Add transaction safety to database operations
-4. Fix file path construction
+### Technique 1: Hierarchical Knowledge Distillation (You don't have this)
 
-### Phase 2: Efficiency Gains (Week 2-3)
-1. Implement HyDE for retrieval
-2. Add hierarchical chunking (parent-child)
-3. Batch embedding generation
-4. Structured output (JSON mode) for prompts
+**What:** Create a "table of contents" index for each project that gets updated on every file ingestion.
 
-### Phase 3: Advanced Features (Week 4+)
-1. Multi-agent debate system
-2. Knowledge graph embeddings (TransE)
-3. Automatic taxonomy generation
-4. Citation graph analysis
+**Why:** Current system treats all chunks equally. But academic papers have structure: Abstract → Introduction → Methods → Results → Conclusion. Code has: Imports → Classes → Methods.
 
-### Phase 4: Scale & Polish (Ongoing)
-1. Vector quantization
-2. Connection pooling
-3. Comprehensive test suite
-4. Documentation site
+**Implementation:**
+```sql
+-- Add to schema.sql
+create table knowledge_hierarchy (
+    id uuid primary key default gen_random_uuid(),
+    project_id uuid references projects(id),
+    level int, -- 0=project, 1=file, 2=section, 3=subsection
+    parent_id uuid references knowledge_hierarchy(id),
+    title text,
+    summary text,
+    node_ids uuid[], -- linked graph nodes
+    embedding vector(1024)
+);
+
+-- During ingestion, extract hierarchy
+class HierarchyExtractor:
+    def extract_from_document(self, chunks: List[Dict]) -> Dict:
+        """Build tree structure from document chunks."""
+        root = {"title": "Document", "children": []}
+        current_path = []
+        
+        for chunk in chunks:
+            headings = chunk['metadata'].get('headings', [])
+            level = len(headings)
+            
+            # Find insertion point
+            node = {"title": headings[-1] if headings else "Content", 
+                   "chunk_ids": [chunk['id']],
+                   "summary": chunk.get('summary', '')}
+            
+            # Insert into tree at correct level
+            self._insert_at_level(root, node, level)
+        
+        return root
+```
+
+### Technique 2: Dynamic Knowledge Graph Pruning (You don't have this)
+
+**What:** Your graph grows indefinitely. Most edges become "stale" or irrelevant over time.
+
+**Implementation:** Add **temporal decay** and **usage-based edge weights**:
+
+```sql
+-- Add to edges table
+alter table edges add column weight float default 1.0;
+alter table edges add column last_accessed timestamp;
+alter table edges add column access_count int default 0;
+
+-- Update weights based on usage
+create or replace function update_edge_usage(p_source text, p_target text)
+returns void as $$
+begin
+    update edges 
+    set access_count = access_count + 1,
+        weight = least(weight * 1.1, 10.0), -- Cap at 10x
+        last_accessed = now()
+    where source_node_id = (select id from nodes where name = p_source)
+      and target_node_id = (select id from nodes where name = p_target);
+end;
+$$;
+
+-- Pruning: Remove edges with weight < 0.1 after 30 days
+create or replace function prune_stale_edges()
+returns int as $$
+declare
+    deleted_count int;
+begin
+    delete from edges 
+    where weight < 0.1 
+      and last_accessed < now() - interval '30 days';
+    get diagnostics deleted_count = row_count;
+    return deleted_count;
+end;
+$$;
+```
+
+### Technique 3: Conceptual Indexing via Hypothetical Questions (Advanced RAG)
+
+**What:** Instead of embedding raw text, embed "questions this text answers."
+
+**Implementation:**
+```python
+async def create_hypothetical_questions(self, chunk: Dict) -> List[str]:
+    """Generate questions that the chunk answers."""
+    prompt = f"""Generate 3 specific questions that the following text answers:
+    
+Text: {chunk['content'][:1000]}
+
+Questions:"""
+    
+    response = await self._openrouter_generate(prompt)
+    questions = [q.strip() for q in response.split('\n') if '?' in q]
+    
+    # Store questions and their embeddings
+    for q in questions:
+        emb = await self.generate_embedding_async(q)
+        self.db.store_question_index(chunk['id'], q, emb)
+    
+    return questions
+
+# During retrieval, match query to questions, not just content
+async def search_with_hypothetical(self, query: str):
+    query_emb = await self.generate_embedding_async(query)
+    
+    # Find similar questions
+    similar_questions = self.db.match_questions(query_emb)
+    
+    # Get chunks that answer those questions
+    chunk_ids = [sq['chunk_id'] for sq in similar_questions]
+    return self.db.get_chunks_by_ids(chunk_ids)
+```
+
+---
+
+## 4. Prompt Engineering Improvements
+
+### Current Weakness: Tool Descriptions are Too Verbose
+**Location:** `agent.py` lines 75-95
+
+**Current:**
+```
+TOOLS:
+1. vector_search(query (string): The search query to find relevant information)
+ - Search the knowledge base for specific information using semantic similarity...
+```
+
+**Problem:** This uses ~200 tokens. With 5 tools, that's 1000 tokens per call. Over 100 calls = 100k wasted tokens.
+
+**Optimized (using structured formats):**
+```python
+def _get_system_prompt(self) -> str:
+    tools = [
+        ("vector_search", "q:str", "Semantic search for specific facts/code"),
+        ("graph_search", "concepts:str", "Find relationships between concepts"),
+        ("project_summary", "-", "Get high-level project overview"),
+        ("python_interpreter", "code:str", "Execute Python calculations"),
+        ("web_search", "query:str", "Search internet for fresh info")
+    ]
+    
+    tool_desc = "\n".join([f"{n}({p}): {d}" for n, p, d in tools])
+    
+    return f"""You are a research assistant. Available tools:
+{tool_desc}
+
+Respond with: ACTION:tool(args) or FINAL ANSWER:text"""
+```
+
+### Missing: Chain-of-Thought Compression
+**Add to agent.py:**
+
+```python
+def _compress_thought_process(self, conversation: str) -> str:
+    """Compress long tool-call chains to prevent context overflow."""
+    if "ACTION:" not in conversation:
+        return conversation
+        
+    # Extract only the last 2 action-observation pairs
+    pattern = r'(ACTION:[\s\S]*?OBSERVATION:[\s\S]*?)(?=\n\n|$)'
+    matches = re.findall(pattern, conversation)
+    
+    if len(matches) > 2:
+        compressed = "[... previous tool calls omitted ...]\n\n" + "\n\n".join(matches[-2:])
+        # Keep system prompt and user query
+        parts = conversation.split("USER QUERY:")
+        if len(parts) == 2:
+            return parts[0] + "USER QUERY:" + parts[1].split("ACTION:")[0] + compressed
+    
+    return conversation
+```
+
+---
+
+## 5. Advanced Techniques You Should Implement
+
+### Technique A: Self-Retrieval Evaluation (SRE)
+**What:** Before answering, the LLM evaluates whether retrieved context is sufficient.
+
+**Implementation:**
+```python
+async def evaluate_retrieval_quality(
+    self, 
+    query: str, 
+    chunks: List[Dict]
+) -> Tuple[bool, str]:
+    """Determine if retrieved context is sufficient to answer."""
+    context = "\n\n".join([c['content'][:500] for c in chunks])
+    
+    eval_prompt = f"""Query: {query}
+Context: {context}
+
+Can the query be answered with high confidence using ONLY the context?
+Respond: SUFFICIENT:YES/NO
+Reason: [one sentence]"""
+    
+    response = await self._openrouter_generate(eval_prompt)
+    
+    is_sufficient = "YES" in response.upper()
+    reason = response.split("Reason:")[-1].strip() if "Reason:" in response else ""
+    
+    return is_sufficient, reason
+
+# In agent loop
+chunks = await self.retrieve(query)
+is_sufficient, reason = await self.evaluate_retrieval_quality(query, chunks)
+
+if not is_sufficient:
+    # Trigger web search or ask for clarification
+    chunks.extend(await self.web_search_fallback(query))
+```
+
+### Technique B: Multi-Query Retrieval (Solve Ambiguity)
+**What:** User queries are often ambiguous. Generate 3 variations of the query, retrieve for each, combine results.
+
+**Implementation:**
+```python
+async def multi_query_retrieval(self, query: str) -> List[Dict]:
+    """Generate query variations and retrieve for each."""
+    prompt = f"""Generate 3 different ways to ask: "{query}"
+Focus on: 1) Technical specificity, 2) Broader context, 3) Alternative phrasing
+Format: One per line, no numbers."""
+    
+    variations_text = await self._openrouter_generate(prompt)
+    variations = [v.strip() for v in variations_text.split('\n') if v.strip()]
+    variations.append(query)  # Include original
+    
+    # Retrieve for all variations
+    all_results = []
+    for var in variations:
+        emb = await self.generate_embedding_async(var)
+        results = self.db.search_vectors(emb, ...)
+        all_results.extend(results)
+    
+    # Deduplicate and re-rank
+    unique_results = {r['id']: r for r in all_results}
+    return list(unique_results.values())
+```
+
+### Technique C: Graph-Guided Retrieval (Your GraphRAG is incomplete)
+**Current:** You search vectors OR graph. These should be **interleaved**.
+
+**Proper GraphRAG:**
+1. Embed query → vector search
+2. Extract entities from top-3 chunks using NER (or use stored graph nodes)
+3. Traverse graph from those entities (2-hop)
+4. Retrieve chunks connected to traversed nodes
+5. Re-rank combined set
+
+```python
+async def true_graphrag_retrieval(self, query: str) -> List[Dict]:
+    """Interleaved vector-graph retrieval."""
+    # Step 1: Vector search
+    query_emb = await self.generate_embedding_async(query)
+    vector_results = self.db.search_vectors(query_emb, limit=5)
+    
+    # Step 2: Extract entities from results (use stored metadata)
+    entities = set()
+    for r in vector_results:
+        # You should store entities per chunk during ingestion
+        chunk_entities = r.get('metadata', {}).get('entities', [])
+        entities.update(chunk_entities)
+    
+    # Step 3: Graph expansion
+    graph_results = []
+    for entity in entities:
+        nodes = self.db.search_nodes_by_name([entity], ...)
+        if nodes:
+            related = self.db.get_related_concepts([n['id'] for n in nodes])
+            chunks = self.db.get_chunks_by_concepts([n['id'] for n in related])
+            graph_results.extend(chunks)
+    
+    # Step 4: Fusion
+    combined = self._reciprocal_rank_fusion(vector_results, graph_results)
+    return combined
+
+def _reciprocal_rank_fusion(self, vector_results, graph_results, k=60):
+    """RRF: Score = sum(1/(k + rank))"""
+    scores = {}
+    
+    for rank, doc in enumerate(vector_results):
+        doc_id = doc['id']
+        scores[doc_id] = scores.get(doc_id, 0) + 1/(k + rank)
+        scores[doc_id + '_doc'] = doc
+    
+    for rank, doc in enumerate(graph_results):
+        doc_id = doc['id']
+        scores[doc_id] = scores.get(doc_id, 0) + 1/(k + rank)
+        if doc_id + '_doc' not in scores:
+            scores[doc_id + '_doc'] = doc
+    
+    # Sort by score
+    sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+    return [scores[id + '_doc'] for id in sorted_ids if '_doc' in id]
+```
+
+---
+
+## 6. Immediate Action Items (Priority Order)
+
+### P0 (Fix Today)
+1. **Fix async loop handling** - Use `get_or_create_event_loop()` pattern
+2. **Cache FlashRank model** - Singleton pattern to prevent reloading
+3. **Add embedding cache** - You're regenerating embeddings for identical chunks
+
+### P1 (This Week)
+4. **Implement query decomposition** - Break complex queries into sub-queries
+5. **Add context compression** - Summarize retrieved chunks before stuffing
+6. **Fix graph node type handling** - Type-aware entity resolution
+
+### P2 (This Month)
+7. **Implement hypothetical indexing** - Embed questions, not just content
+8. **Add usage-based graph pruning** - Keep graph relevant
+9. **Build hierarchical knowledge index** - Project → File → Section structure
+
+### P3 (Advanced)
+10. **Self-evaluation loop** - LLM checks if context is sufficient before answering
+11. **Multi-hop reasoning traces** - Show user how conclusions were reached via graph paths
+12. **Adaptive retrieval depth** - Deep traversal for complex queries, shallow for simple ones
 
 ---
 
 ## Summary
 
-Your codebase is **well-architected** with good separation of concerns and modern Python practices. The main areas for improvement are:
+Your system has excellent bones—hybrid retrieval, agentic architecture, and code-aware parsing are sophisticated choices. The main efficiency gains come from:
 
-1. **Robustness**: Fix async handling and edge cases
-2. **Efficiency**: Implement HyDE, hierarchical indexing, and batch processing
-3. **Intelligence**: Add query expansion, self-querying, and multi-agent capabilities
-4. **Organization**: Modularize the UI and add service/repository layers
+1. **Smarter context management** (compression, hierarchical synthesis)
+2. **Intelligent retrieval routing** (interleaved vector-graph, not sequential)
+3. **Caching at multiple levels** (embeddings, queries, model instances)
+4. **Knowledge organization** (hierarchical indices, temporal decay)
 
-The system has strong potential for handling complex research workflows. The GraphRAG implementation is particularly well-done, and with the suggested enhancements, it could compete with commercial solutions.
+The "efficiency of LLM reasoning" isn't just about speed—it's about **signal-to-noise ratio in the context window**. Every token spent on redundant metadata or irrelevant chunks is a token not spent on reasoning.

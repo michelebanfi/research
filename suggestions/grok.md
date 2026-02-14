@@ -1,110 +1,90 @@
-### Overview of the Repository
-The repository hosts a Streamlit-based application called "Local-Brain Research Assistant," which serves as a personal knowledge base for research, supporting file ingestion (PDFs, Markdown, code), vector-based semantic search, graph-based retrieval (GraphRAG), and an AI agent for querying the knowledge base. It integrates Supabase for database storage (including vector embeddings via pgvector), Ollama for local embeddings (using nomic-embed-text), OpenRouter for LLM inference (e.g., Qwen models), and tools like Docling for document parsing and AST for code analysis. The system builds a knowledge graph during ingestion to capture entities and relationships, enabling relational queries. It also features a ReAct-style agent for tool-calling and a "reasoning mode" for plan-code-verify loops on computational tasks.
+### Deep Code Analysis
 
-Key components:
-- **Ingestion Pipeline**: Routes files to parsers (Docling for docs, AST for code), chunks content, generates embeddings, extracts summaries/keywords/claims, builds graph nodes/edges, and stores in DB.
-- **Retrieval**: Hybrid vector + graph search, with optional re-ranking (FlashRank) and web fallback for low-relevance local results.
-- **Agent**: Handles queries via tools (vector_search, graph_search, project_summary, python_interpreter, web_search), with logging and UI status updates.
-- **UI**: Streamlit app with project management, chat interface showing retrieved context, file ingestion, and knowledge graph visualization (using streamlit-agraph).
-- **Security/Performance**: Sandbox for code execution with static analysis, rate limiting, retries, caching for embeddings.
+I'll break this down into sections: an overview of the project's architecture, identified bugs and logical flaws, and recommendations for improvements. The focus is on enhancing efficiency (defined as LLM reasoning quality over the knowledge base), organizing knowledge, improving prompts, and incorporating unused methods/techniques. My analysis is based on the full codebase provided, including partial/truncated files (e.g., `agent.py`, `evaluation.py`). Where content is truncated, I've inferred from context and imports.
 
-The project is well-structured in `src/` with modular files (e.g., `ai_engine.py` for LLM/embedding ops, `database.py` for Supabase interactions). However, it's incomplete in places (e.g., app.py cuts off mid-delete logic), lacks a README, and has no tests or CI.
+#### Project Architecture Overview
+- **Core Functionality**: This is a Streamlit-based "Local-Brain Research Assistant" for querying a personal knowledge base (documents/code). It uses RAG (Retrieval-Augmented Generation) with vector search, knowledge graphs for relationships, and agentic reasoning (ReAct-style tool calling or "Plan & Code" mode).
+- **Key Components**:
+  - **DB (Supabase + pgvector)**: Stores projects, files, hierarchical chunks (with metadata, reference flags), keywords, graph nodes/edges.
+  - **Ingestion**: Routes files (code vs. docs), parses with AST (code) or Docling (docs) for chunks/graph data, generates embeddings (Ollama), summaries/graphs (OpenRouter LLM).
+  - **Retrieval**: Vector search (cosine similarity), GraphRAG (node traversal), hybrid via tools.
+  - **Agent**: ReAct loop (`agent.py`) or LangGraph (`agent_graph.py`) for tool use; reasoning agent (`reasoning_agent.py`) for code execution/verification.
+  - **UI**: Tabs for chat (split-screen with live process/context), ingestion, graph viz (streamlit-agraph).
+  - **Tools**: Vector/graph search, project summary, Python sandbox, web search (DuckDuckGo).
+  - **Misc**: Caching, logging, config from env, security in sandbox.
+- **Strengths**: Modular, async-friendly, secure sandbox, hierarchical chunks (small-to-big retrieval), basic GraphRAG.
+- **Weaknesses**: Incomplete LangGraph migration, underused features (e.g., query expansion), basic prompts leading to potential hallucinations/inefficiency.
 
-### Logical Flaws and Bugs
-Based on a thorough review of the code:
+#### Identified Bugs and Logical Flaws
 
-1. **Truncated/Incomplete Code in app.py**:
-   - The provided app.py snippet ends abruptly in the ingest tab during file deletion logic: `if st.button("Delete", key=f"del_{f['id']}"): if db`. This suggests the file is incomplete or the fetch truncated it. Potential bug: Incomplete deletion could leave orphaned chunks/keywords/nodes in DB, leading to data inconsistencies. Fix: Complete the deletion to call `db.delete_file(f['id'])` and refresh the file list.
+1. **Async Loop Issues in Streamlit (Logical Flaw)**:
+   - In `ui/chat.py` and `ui/ingest.py`, uses `nest_asyncio.apply()` to patch loops, but this can lead to unclosed loops/warnings in Streamlit's threaded env.
+   - Impact: Sporadic runtime errors or resource leaks during async tasks (e.g., embeddings, LLM calls).
+   - Fix: Use `asyncio.run()` only in non-running loops; prefer `streamlit`'s experimental async support or refactor to callbacks.
 
-2. **Embedding Dimension Hardcoding**:
-   - In `schema.sql`, embeddings are fixed at `vector(1024)`, matching nomic-embed-text. But if users switch models (e.g., via env var), dimension mismatches could crash searches. Logical flaw: No dynamic schema handling. Fix: Make dimension configurable and add migration scripts.
+2. **Truncated Responses in Tools (Logical Flaw)**:
+   - In `tools.py` (e.g., `_vector_search`, `_graph_search`), truncates content to 500/400 chars for LLM context.
+   - Impact: Loses full chunk details, reducing reasoning accuracy for long docs.
+   - Fix: Use dynamic truncation based on model context limit (e.g., `Config.MODEL_CONTEXT_LIMIT`); or summarize chunks on-the-fly.
 
-3. **Graph Data Storage Issues**:
-   - In `store_graph_data` RPC (schema.sql), nodes use `unique (name, type)`, but names are case-sensitive and unnormalized, risking duplicates (e.g., "AI" vs "ai"). Edges lack directionality in some cases. Bug: In `ai_engine.py`, entity synonyms are loaded but not used in graph extraction, leading to fragmented graphs (e.g., "LLM" and "large language model" as separate nodes). Fix: Normalize names to lowercase and apply synonyms during extraction (`_parse_graph_data_with_pydantic`).
+3. **Incomplete LangGraph Migration (Bug in Transition)**:
+   - `agent_graph.py` is partial (truncated), but `app.py` still uses old `agent.py`. Roadmap mentions LangGraph for state/checkpoints.
+   - Impact: No checkpoints/human-in-loop; potential infinite loops in ReAct.
+   - Fix: Complete `agent_graph.py` integration; replace `ResearchAgent` with graph-based executor.
 
-4. **Re-ranking Dependency**:
-   - Vector search assumes FlashRank for re-ranking, but if not installed, it silently falls back without error handling in UI/agent. Potential flaw: Degraded relevance without notice. Fix: Check for FlashRank import and log/warn if unavailable.
+4. **Security Bypass Potential in Sandbox (Logical Flaw)**:
+   - `sandbox.py` blocks modules/builtins via AST scan, but misses advanced exploits (e.g., `type.mro(object)[1].__init__.__globals__` for globals access).
+   - Impact: Low-risk for local app, but if exposed, could allow code injection.
+   - Fix: Use restricted env (e.g., PyPy sandbox) or third-party like `restrictedpython`.
 
-5. **Sandbox Security Gaps**:
-   - In `sandbox.py`, blocked modules/builtins are comprehensive, but AST scanning misses dynamic evals (e.g., `getattr(__builtins__, 'eval')`). Also, no resource limits (e.g., memory via `resource` module, which is blocked but could be bypassed). Bug: Timeout uses asyncio but no hard kill for infinite loops. Fix: Use multiprocessing with resource limits (rlimit) and stricter AST visitors.
+5. **Underhandled Errors in Ingestion (Bug)**:
+   - In `ingestion.py`, if embeddings fail, skips chunks silently; no retry.
+   - Impact: Incomplete KB, leading to poor retrieval.
+   - Fix: Add retries (use `tenacity` like in `ai_engine.py`); log skips.
 
-6. **Async/Sync Mismatches**:
-   - Agent uses `asyncio.run` in app.py, but some tools (e.g., initial vector search) mix sync/async, risking event loop issues in Streamlit (despite `nest_asyncio`). Flaw: `ai_engine.generate_embedding` is sync while async version exists; inconsistent usage. Fix: Make all AI calls async and use `await` throughout.
+6. **Query Expansion Not Used (Logical Flaw)**:
+   - `ai_engine.py` has `expand_query` with synonyms, but not called in searches.
+   - Impact: Misses synonyms (e.g., "LLM" for "large language model"), reducing recall.
+   - Fix: Integrate in `_vector_search` (multi-query fusion).
 
-7. **Error Handling in Ingestion**:
-   - In `ingestion.py`, parsers return empty lists on errors without raising/logging specifics, leading to silent failures. Bug: No validation on chunk metadata (e.g., missing page_number). Fix: Add structured exceptions and UI feedback.
+7. **Partial File Contents (Analysis Limitation)**:
+   - Files like `agent.py`, `ai_engine.py`, `evaluation.py` are truncated, but no obvious bugs in visible parts. Assume full code aligns with roadmap.
 
-8. **Performance Bottlenecks**:
-   - Graph traversal RPC uses recursive CTE without cycle detection, risking stack overflows on large graphs. Flaw: No indexing on `files_nodes` for frequent joins. Fix: Add indexes and limit depth strictly.
+#### Room for Improvements: Organizing Knowledge
+Current: Knowledge in projects/files/chunks/graph; hierarchical chunks good for structure.
+Improvements:
+- **Auto-Tagging/Clustering**: Use LLM to auto-tag files (e.g., "ML", "NLP") post-ingestion. Cluster similar chunks/files via embeddings (e.g., KMeans in `ingestion.py`).
+- **Multi-Modal Support**: Extract images/tables from PDFs (Docling supports); store as separate chunks with OCR (e.g., Tesseract). Enhances reasoning over visual data.
+- **Versioning/History**: Add DB table for file versions; track changes for time-based queries (e.g., "What changed in this doc?").
+- **Cross-Project Links**: Allow graph edges across projects for unified KB.
+- **Efficiency Gain**: Reduces siloed knowledge; LLMs can reason over clusters (e.g., tool for "cluster_search").
 
-9. **Prompt Parsing Fragility**:
-   - In `agent.py`, `_parse_action` uses regex with balanced paren counter, but fails on nested strings/quotes. Bug: Doesn't handle multi-line actions. Fix: Use a proper parser like pyparsing.
+#### Room for Improvements: Prompt Engineering
+Current: Prompts are basic (e.g., in `agent.py`: simple JSON format; in `reasoning_agent.py`: explicit but no few-shot).
+Improvements:
+- **Few-Shot Examples**: Add 2-3 examples in system prompts (e.g., for ReAct: show tool chain for "find ML def → graph related → verify code").
+- **Chain-of-Thought (CoT)**: In `ai_engine.py` (e.g., `extract_key_claims_async`), prepend "Think step-by-step: 1. Identify claims...".
+- **Role-Tuning**: Use domain-specific roles (e.g., "You are a CS researcher" for code queries).
+- **Dynamic Prompts**: In tools, inject user query history for continuity.
+- **Efficiency Gain**: Better JSON compliance, fewer hallucinations; test with eval metrics (e.g., extend `evaluation.py` for prompt A/B testing).
 
-10. **Missing Validation**:
-    - User inputs (e.g., project names, queries) aren't sanitized, risking SQL injection (though Supabase-py parametrizes). Flaw: No rate limiting on agent loops beyond MAX_ITERATIONS=5.
+#### New Methods/Techniques Not Used
+Current: Basic vector RAG + simple GraphRAG; no advanced retrieval/reasoning.
+New Techniques:
+1. **HyDE (Hypothetical Document Embeddings)**: Generate hypothetical answer via LLM, embed it for search. Add to `tools.py` as "hyde_search" tool. Improves zero-shot relevance.
+2. **Multi-Query Retrieval with Fusion**: Use `expand_query` (already in code) to generate 3-5 variants; search in parallel, fuse with RRF (Reciprocal Rank Fusion). Integrate in `_vector_search`.
+3. **Context Compression**: Post-retrieval, LLM-summarize chunks (e.g., in `ai_engine.py`, add `compress_context`). Reduces tokens, boosts efficiency.
+4. **Self-Querying Retriever**: LLM generates DB filters (e.g., "date > 2020") from query. Use LangChain's SelfQueryRetriever with Supabase.
+5. **Agent Memory**: Add long-term memory (e.g., vector store for chat history) to agents for multi-turn reasoning.
+6. **Fine-Tuned Embeddings**: Train embeddings on domain data (e.g., using SentenceTransformers). Replace Ollama with fine-tuned model.
+7. **Multi-Agent Setup**: Per roadmap, implement (e.g., Researcher for retrieval, Coder for reasoning). Use CrewAI or LangGraph teams.
+8. **Benchmarking**: Extend `evaluation.py` to run on dataset (e.g., RAGAS for faithfulness/answer relevance). Automate with CI.
+- **Efficiency Gain**: These boost recall/precision (e.g., HyDE +20% in benchmarks); multi-query handles ambiguity; compression fits more context.
 
-### Room for Improvements: Organizing Knowledge Better
-The current knowledge organization uses vector chunks + graph for entities/relations, which is solid but can be enhanced for better LLM reasoning efficiency (e.g., reducing hallucinations, improving multi-hop queries).
+#### Overall Efficiency Enhancements
+- **Latency**: Cache queries (extend `cache.py` to full responses); parallelize embeddings in `ingestion.py`.
+- **Scalability**: Move to local FAISS for vectors if Supabase slow; shard DB by projects.
+- **Reasoning Quality**: Migrate fully to LangGraph for checkpoints; add human-in-loop in UI.
+- **Next Steps**: Prioritize dim fix, LangGraph completion, HyDE integration. Test with evals.
 
-1. **Hierarchical Knowledge Structure**:
-   - Current: Flat chunks with metadata; graph is entity-focused but not hierarchical.
-   - Improvement: Implement a multi-level hierarchy (e.g., Project > File > Section > Chunk). Use tree-like nodes in graph for sections (e.g., "Abstract" as child of file). Technique: During ingestion, build a document tree using Docling's hierarchy and store as nested JSON in metadata or dedicated table. This allows LLMs to navigate via "summary-of-summaries" for large docs, improving reasoning over long contexts.
-
-2. **Ontology-Based Graph**:
-   - Current: Ad-hoc node types ("Concept", "Class", etc.) without formal ontology.
-   - New Technique: Define a simple ontology (e.g., in OWL or JSON schema) for research domains (e.g., "Method" isa "Concept", with properties). Use during extraction to enforce consistency. Add relation weights based on co-occurrence frequency. This enhances GraphRAG by allowing typed queries (e.g., "find Methods related to LLM").
-
-3. **Multi-Modal Knowledge**:
-   - Current: Text-only; tables flagged but not structured.
-   - Improvement: For tables/images in PDFs (Docling supports), store as JSON/alt-text and link to chunks. Technique: Use multimodal embeddings (e.g., CLIP via Ollama) for images, storing in separate vector column. Enables reasoning like "analyze this chart's trends."
-
-4. **Versioning and Provenance**:
-   - Add file versioning in DB (e.g., timestamped updates) and track chunk provenance (original vs. summarized). Technique: Use Git-like diffs for code files during re-ingestion to update only changes, reducing recompute.
-
-### Improving Prompts
-Prompts are explicit but can be optimized for better LLM performance, especially with smaller models like Qwen.
-
-1. **Chain-of-Thought (CoT) Integration**:
-   - Current: Basic "Think step by step" in agent prompt.
-   - Improvement: Use structured CoT in all prompts, e.g., "Step 1: Analyze query. Step 2: Select tool. Step 3: Explain why." For graph extraction (`ai_engine._parse_graph_data_with_pydantic`), add few-shot examples of good/bad graphs.
-
-2. **Error-Aware Feedback**:
-   - In reasoning_agent, feedback is raw errors; improve by summarizing: "Error type: Syntax. Location: Line 5. Suggestion: Fix indentation."
-
-3. **Query Expansion with Synonyms**:
-   - Current: Synonyms.json loaded but unused in searches.
-   - Improvement: In vector/graph_search, expand query with synonyms (e.g., "LLM" -> "large language model, llms"). Technique: Use LLM to generate expansions or integrate with synonyms dict.
-
-4. **Context Compression**:
-   - For long retrieved chunks, add a prompt to compress: "Summarize this chunk relevant to [query]: {chunk}"
-
-### New Methods and Techniques Not Yet Used
-To maximize efficiency (LLM reasoning over KB):
-
-1. **Hybrid Retrieval with BM25 + Vectors**:
-   - Current: Pure semantic search.
-   - Technique: Add keyword-based BM25 (via Whoosh or Elasticsearch) as fallback for exact matches (e.g., code symbols). Fuse scores: 0.7*semantic + 0.3*keyword. Improves precision for technical terms.
-
-2. **Self-Querying Retriever**:
-   - Technique: Use LangChain's SelfQueryRetriever to let LLM decompose queries into filters (e.g., "papers after 2020" -> metadata filter on date). Integrate with Supabase filters.
-
-3. **Fine-Grained Reranking with Cross-Encoders**:
-   - Current: FlashRank (optional).
-   - New: Use a cross-encoder model (e.g., ms-marco-MiniLM) for final rerank, as it's more accurate than bi-encoders for top-k.
-
-4. **Active Learning for Graph Refinement**:
-   - Technique: Periodically query LLM on ambiguous edges (e.g., "Is X related to Y?") and update graph. Use uncertainty sampling on low-confidence relations.
-
-5. **Compression and Distillation**:
-   - Technique: Use LLM to distill long chunks into entity-relation triples, storing as compressed vectors. Reduces context length for reasoning.
-
-6. **Evaluation Metrics**:
-   - Add offline eval: Generate Q&A pairs from KB, measure retrieval recall/F1. Technique: Use RAGAS framework for faithfulness/answer relevance scoring.
-
-7. **Scalability: Vector Index Optimization**:
-   - Technique: Use HNSW indexing in pgvector for faster searches on large DBs. Partition tables by project_id.
-
-8. **Personalization**:
-   - Technique: Fine-tune embeddings on user-specific data (e.g., via SentenceTransformers) for better domain adaptation.
-
-Implementing these would make the system more robust and efficient, focusing on precise, contextual reasoning. Start with synonyms integration and hybrid search for quick wins.
+This makes the project more robust and efficient for LLM reasoning.
