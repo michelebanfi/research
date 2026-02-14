@@ -220,11 +220,17 @@ class AIEngine:
                     time.sleep(wait_time)
         raise last_error or Exception("Max retries exceeded")
 
-    async def generate_summary_async(self, text: str) -> str:
+    async def generate_summary_async(self, text: str, _depth: int = 0) -> str:
         """Generates a technical summary of the text asynchronously. Uses map-reduce for long texts."""
         MAX_CHUNK_SIZE = 4000
+        MAX_RECURSION_DEPTH = 3
         
         try:
+            if _depth >= MAX_RECURSION_DEPTH:
+                # Force single-pass summary on truncated text to prevent infinite recursion
+                prompt = f"Summarize the following technical content concisely:\n\n{text[:MAX_CHUNK_SIZE]}"
+                return await self._openrouter_generate(prompt)
+            
             if len(text) <= MAX_CHUNK_SIZE:
                 prompt = f"Summarize the following technical content concisely:\n\n{text}"
                 return await self._openrouter_generate(prompt)
@@ -243,8 +249,8 @@ class AIEngine:
             
             # Reduce Step: Summarize the combined summaries
             combined_summary = "\n\n".join(chunk_summaries)
-            # Recursively call generate_summary_async using await
-            return await self.generate_summary_async(combined_summary)
+            # Recursively call generate_summary_async with incremented depth
+            return await self.generate_summary_async(combined_summary, _depth + 1)
 
         except Exception as e:
             print(f"Error generating summary async: {e}")
@@ -323,9 +329,24 @@ Return ONLY the JSON array, no other text."""
         # Remove trailing commas in arrays and objects
         json_str = re.sub(r',\s*([\]}])', r'\1', json_str)
         
-        # Remove common LLM artifacts
-        json_str = re.sub(r'^[^{]*', '', json_str)  # Remove text before first {
-        json_str = re.sub(r'[^}]*$', '', json_str)  # Remove text after last }
+        # Remove common LLM artifacts — handle both JSON objects {...} and arrays [...]
+        json_str = json_str.strip()
+        first_brace = json_str.find('{')
+        first_bracket = json_str.find('[')
+        
+        if first_brace == -1 and first_bracket == -1:
+            return json_str  # No JSON structure found, return as-is
+        elif first_brace == -1:
+            start, end_char = first_bracket, ']'
+        elif first_bracket == -1:
+            start, end_char = first_brace, '}'
+        else:
+            start = min(first_brace, first_bracket)
+            end_char = '}' if start == first_brace else ']'
+        
+        end = json_str.rfind(end_char)
+        if end > start:
+            json_str = json_str[start:end + 1]
         
         return json_str.strip()
     

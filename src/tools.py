@@ -44,6 +44,8 @@ class ToolRegistry:
         self.project_id = project_id
         self.status_callback = status_callback
         self.do_rerank = do_rerank
+        self._web_search_count = 0
+        self._web_search_limit = 5  # Max web searches per agent run
         self._tools = self._create_tools()
     
     def _notify(self, tool_name: str, phase: str):
@@ -305,6 +307,12 @@ class ToolRegistry:
         if not query or not query.strip():
             self._notify("web_search", "complete")
             return "Error: No search query provided."
+        
+        # Per-session rate limiting
+        if self._web_search_count >= self._web_search_limit:
+            self._notify("web_search", "complete")
+            return f"Web search limit reached ({self._web_search_limit} per session). Please use knowledge base results instead."
+        self._web_search_count += 1
         
         max_retries = 3
         last_error = None

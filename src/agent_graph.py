@@ -19,6 +19,7 @@ class AgentState(TypedDict):
     documents: List[Dict[str, Any]]
     generation: str
     relevance_score: str  # "yes" or "no"
+    retry_count: int  # Track transform → retrieve cycles to prevent infinite loops
 
 # --- Node Components ---
 
@@ -125,7 +126,7 @@ class GraphNodes:
         response = await self.llm.ainvoke(msg)
         better_question = response.content
         
-        return {"user_query": better_question}
+        return {"user_query": better_question, "retry_count": state.get("retry_count", 0) + 1}
 
 # --- Graph Builder ---
 
@@ -144,7 +145,12 @@ def build_graph(ai_engine: AIEngine, db: DatabaseClient, project_id: str):
     workflow.add_edge(START, "retrieve")
     workflow.add_edge("retrieve", "grade_documents")
     
+    MAX_RETRIES = 2  # Prevent infinite retrieve → grade → transform cycles
+    
     def decide_to_generate(state):
+        if state.get("retry_count", 0) >= MAX_RETRIES:
+            print(f"---MAX RETRIES ({MAX_RETRIES}) REACHED, FORCING GENERATION---")
+            return "generate"
         if state["relevance_score"] == "yes":
             return "generate"
         else:
@@ -172,7 +178,8 @@ async def run_agent_graph(user_query: str, ai_engine, db, project_id: str):
     
     inputs = {
         "user_query": user_query,
-        "messages": [HumanMessage(content=user_query)]
+        "messages": [HumanMessage(content=user_query)],
+        "retry_count": 0
     }
     
     # We will just return the final state's generation
