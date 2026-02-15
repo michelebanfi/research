@@ -108,12 +108,7 @@ def process_upload(uploaded_file, db, ai):
             
             full_text = "\n".join([c['content'] for c in chunks])
             
-            # Fix for event loop issues with Streamlit
-            import nest_asyncio
-            try:
-                nest_asyncio.apply()
-            except RuntimeError:
-                pass
+
             
             async def run_ingestion_pipeline():
                 # Create fresh async client
@@ -173,15 +168,11 @@ def process_upload(uploaded_file, db, ai):
             
             # Execute async pipeline
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    summary, graph_data, embeddings = loop.run_until_complete(run_ingestion_pipeline())
-                else:
-                    summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
-            except RuntimeError as e:
-                # If loop is running and run_until_complete fails (shouldn't with nest_asyncio), fallback
-                print(f"Async runtime error: {e}, falling back to sync wait")
-                summary, graph_data, embeddings = asyncio.run(run_ingestion_pipeline())
+                from src.utils.async_utils import run_sync
+                summary, graph_data, embeddings = run_sync(run_ingestion_pipeline())
+            except Exception as e:
+                print(f"Async runtime error: {e}")
+                raise e
             
             # Validate embeddings
             valid_chunks = []
@@ -220,6 +211,47 @@ def process_upload(uploaded_file, db, ai):
             
             if file_meta:
                 file_id = file_meta['id']
+                
+                # REQ-HIERARCHY: Extract and store sections
+                sections_data = []
+                seen_paths = set()
+                
+                # Extract unique sections from all chunks
+                for c in chunks:
+                    headings = c['metadata'].get('headings', [])
+                    if not headings:
+                        continue
+                        
+                    # Reconstruct hierarchy for this chunk's path
+                    current_path = []
+                    for i, title in enumerate(headings):
+                        current_path.append(title)
+                        path_tuple = tuple(current_path)
+                        
+                        if path_tuple not in seen_paths:
+                            seen_paths.add(path_tuple)
+                            sections_data.append({
+                                'title': title,
+                                'level': len(current_path),
+                                'path': current_path,
+                                'parent_path': current_path[:-1] if len(current_path) > 1 else []
+                            })
+                
+                # Store sections in DB (batch/one-by-one handled in DB method)
+                section_map = {}
+                if sections_data:
+                    st.text(f"Storing {len(sections_data)} document sections...")
+                    section_map = db.store_sections(file_id, sections_data)
+                
+                # Link chunks to sections
+                for c in chunks:
+                    headings = c['metadata'].get('headings', [])
+                    if headings:
+                        # Chunk belongs to the deepest section in its headings
+                        path_tuple = tuple(headings)
+                        if path_tuple in section_map:
+                            c['section_id'] = section_map[path_tuple]
+                
                 db.store_chunks(file_id, chunks)
                 db.store_keywords(file_id, keywords)
                 db.store_graph_data(file_id, nodes, edges)

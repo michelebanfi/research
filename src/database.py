@@ -77,6 +77,52 @@ class DatabaseClient:
             print(f"Error uploading file metadata: {e}")
             return None
 
+    def store_sections(self, file_id: str, sections: List[Dict[str, Any]]) -> Dict[tuple, str]:
+        """
+        Stores sections and returns a map of (title, level, parent_title) -> section_id.
+        This allows linking chunks to sections.
+        """
+        if not sections:
+            return {}
+            
+        # Sort by level to insert parents first? 
+        # Actually we need to insert and get IDs to link parents.
+        # Simple approach: Insert all, then map.
+        # But parent_section_id needs the parent to exist.
+        
+        # We'll assume sections are passed in order or we do multi-pass.
+        # In ingestion, we have a tree. We can traverse and insert.
+        
+        # For now, let's just insert one by one or batch if possible.
+        # Given the complexity of parent hierarchy in SQL, one-by-one with local cache is safest/easiest.
+        
+        section_map = {} # (tuple_path) -> uuid
+        
+        # Sort sections by level
+        sorted_sections = sorted(sections, key=lambda s: s['level'])
+        
+        for sec in sorted_sections:
+            parent_id = None
+            if sec.get('parent_path'):
+                parent_id = section_map.get(tuple(sec['parent_path']))
+            
+            data = {
+                "file_id": file_id,
+                "title": sec['title'],
+                "level": sec['level'],
+                "parent_section_id": parent_id
+            }
+            
+            try:
+                res = self.client.table("sections").insert(data).execute()
+                if res.data:
+                    sid = res.data[0]['id']
+                    section_map[tuple(sec['path'])] = sid
+            except Exception as e:
+                print(f"Error storing section {sec['title']}: {e}")
+                
+        return section_map
+
     def store_chunks(self, file_id: str, chunks: List[Dict[str, Any]]):
         """
         Stores chunks for a file with metadata and reference flags.
@@ -94,7 +140,8 @@ class DatabaseClient:
                 "metadata": chunk.get('metadata', {}),
                 "is_reference": chunk.get('is_reference', False),
                 "parent_chunk_id": chunk.get('parent_chunk_id'), # Hierarchical
-                "chunk_level": chunk.get('chunk_level', 0) # Hierarchical
+                "chunk_level": chunk.get('chunk_level', 0), # Hierarchical
+                "section_id": chunk.get('section_id') # Hierarchical: Link to section
             }
             data_to_insert.append(chunk_data)
         self.client.table("file_chunks").insert(data_to_insert).execute()
@@ -153,14 +200,6 @@ class DatabaseClient:
             
         # The RPC returns everything we need (metadata, file_path, file_name)
         # So no need for extra N+1 queries here!
-        
-        # 4. Small-to-Big Retrieval: Fetch Parent Chunks (Optional Context Expansion)
-        # This is strictly optional and can be done only if needed. 
-        # For now, we'll keep it simple or implement a bulk fetch if strict requirement.
-        # But to keep this strictly compliant with "Fix N+1", we avoid the loop.
-        # If parent context is critical, we should bake it into the RPC or a second bulk call.
-        
-        # For this phase, we return the direct results which is a huge speedup.
         return results
 
     def store_graph_data(self, file_id: str, nodes: List[Dict[str, str]], edges: List[Dict[str, str]]):

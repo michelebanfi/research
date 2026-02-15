@@ -222,13 +222,18 @@ RESPONSE EXAMPLES:
 2. To give a final answer:
 {{
   "thought": "I have found enough information to answer the user.",
-  "final_answer": "Machine learning is a field of study..."
+  "actions": [
+    {{
+      "tool_name": "answer",
+      "argument": "Focus on the definition of machine learning and its applications."
+    }}
+  ]
 }}
 
 GUIDELINES:
 1. Always include a "thought" field to explain your reasoning.
-2. Use "actions" (list) to call multiple tools in parallel when possible (e.g. search + web_search).
-3. If you found the answer, provide "final_answer".
+2. Use "actions" (list) to call multiple tools in parallel.
+3. If you have enough information, call the "answer" tool.
 """
         # Build history text
         history_text = ""
@@ -275,6 +280,17 @@ GUIDELINES:
         logger.log_step("iteration", f"Starting iteration {iteration}/{MAX_RESEARCH_ITERATIONS}")
 
         conversation = state["conversation"]
+        
+        # REQ-IMP-10: Decompose query on first iteration if complex
+        if iteration == 1 and len(state["user_query"].split()) > 10:
+             sub_qs = await self.ai.decompose_query(state["user_query"])
+             if len(sub_qs) > 1:
+                 logger.log_step("decomposition", f"Decomposed into: {sub_qs}")
+                 self._emit("thought", f"Decomposed query: {sub_qs}", {"type": "decomposition"})
+                 # Inject into conversation
+                 s_q_text = "\n".join([f"- {q}" for q in sub_qs])
+                 conversation += f"\n\n[SYSTEM Suggestion]\nConsider addressing these sub-questions:\n{s_q_text}\n"
+
         start = time.time()
         llm_response, model_name = await self.ai._openrouter_generate(
             conversation,
@@ -708,52 +724,44 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
 
         self._emit("thought", "Verifying result...", {"phase": "verify"})
 
-        prompt = f"""Generate a Python script that verifies the following output.
+        self._emit("thought", "Verifying result...", {"phase": "verify"})
 
-OUTPUT TO VERIFY:
-{output}
+        prompt = f"""Verify if the following execution output meets the verification criteria defined in the plan.
 
-VERIFICATION CRITERIA:
+PLAN VERIFICATION LOGIC:
 {plan.verification_logic}
 
-Write Python code that:
-1. Uses OUTPUT = '''{output}'''
-2. Uses assert statements to verify
-3. Prints "VERIFICATION PASSED" if all pass
+ACTUAL EXECUTION OUTPUT:
+{output[:5000]}
 
-Respond with ONLY Python code in a ```python``` block."""
-
+Respond ONLY with a JSON object:
+{{
+  "verified": true/false,
+  "reason": "Explanation of why it passed or failed",
+  "suggestions": "If failed, specific suggestions to fix the code"
+}}
+"""
         try:
-            text = await self.ai._openrouter_generate(prompt)
-            code_match = re.search(r'```python\s*(.*?)```', text, re.DOTALL | re.IGNORECASE)
-            if not code_match:
-                code_match = re.search(r'```\s*(.*?)```', text, re.DOTALL)
+            response = await self.ai._openrouter_generate(prompt)
+            clean_res = self.ai._clean_json_string(response)
+            import json
+            verification = json.loads(clean_res)
+            
+            if verification.get("verified"):
+                logger.finish("success", output)
+                return {"feedback": "VERIFIED"}
+            else:
+                 reason = verification.get("reason", "Verification failed")
+                 suggestions = verification.get("suggestions", "")
+                 feedback = f"Verification Failed.\nReason: {reason}\nSuggestions: {suggestions}\n\nPlease fix the code."
+                 return {"feedback": feedback}
 
-            if code_match:
-                script = code_match.group(1).strip()
-                ver_success, ver_output = await run_code(script, timeout_s=5.0)
-
-                if ver_success:
-                    logger.finish("success", output)
-                    return {"feedback": "VERIFIED"}
-                else:
-                    return {
-                        "feedback": (
-                            f"Code executed with output: {output}\n"
-                            f"But verification FAILED:\n{ver_output}\n"
-                            f"Expected: {plan.verification_logic}\n"
-                            "Fix the code to pass verification."
-                        )
-                    }
-        except Exception:
-            pass
-
-        # Basic fallback verification
-        if output and not any(w in output.lower() for w in ["error", "exception", "traceback", "failed"]):
-            logger.finish("success", output)
-            return {"feedback": "VERIFIED"}
-
-        return {"feedback": f"Output doesn't meet requirements: {output}"}
+        except Exception as e:
+            logger.log_error(f"Verification LLM error: {e}")
+            # Fallback
+            if output and not any(w in output.lower() for w in ["error", "exception", "traceback", "failed"]):
+                 return {"feedback": "VERIFIED"}
+            return {"feedback": f"Verification system error: {e}"}
 
     async def finalize_reasoning(self, state: ResearchState) -> ResearchState:
         """Build ReasoningResponse from accumulated state."""
@@ -782,19 +790,74 @@ Respond with ONLY Python code in a ```python``` block."""
 # Conditional edge functions
 # ---------------------------------------------------------------------------
 
+    async def generate_answer(self, state: ResearchState) -> ResearchState:
+        """Stream the final answer to the UI."""
+        logger = chat_logger.get_logger()
+        logger.log_step("answer", "Generating and streaming final answer")
+        
+        conversation = state["conversation"]
+        parsed_actions = state.get("parsed_actions", [])
+        answer_instruction = ""
+        
+        # Find answer tool argument
+        for name, arg in parsed_actions:
+            if name == "answer":
+                answer_instruction = arg
+                break
+                
+        # Construct prompt for the answer
+        # REQ-FIX: Force plain text to override previous JSON instructions
+        # We start with a strong system instruction to ignore JSON
+        system_prompt = "You are a helpful research assistant. Answer the user's question directly using Markdown. Do NOT use JSON. Ignore any previous instructions to format as JSON."
+        
+        prompt = (
+            f"{conversation}\n\n"
+            f"[SYSTEM]: The user has requested an answer. "
+            f"Based on the gathered information and the following instruction, provide a comprehensive answer.\n"
+            f"Instruction: {answer_instruction}\n"
+            f"IMPORTANT: Output ONLY the answer text in Markdown. Do NOT wrap in JSON.\n\n"
+            "FINAL ANSWER:"
+        )
+        
+        full_answer = ""
+        try:
+            # REQ-IMP-14: Stream tokens
+            async for token in self.ai._openrouter_generate_stream(prompt, system_prompt=system_prompt):
+                full_answer += token
+                self._emit("token", token)
+                
+        except Exception as e:
+            logger.log_error(f"Streaming failed: {e}")
+            full_answer = f"Error generating answer: {e}"
+            
+        return {"final_answer": full_answer}
+
+# ---------------------------------------------------------------------------
+# Conditional edge functions
+# ---------------------------------------------------------------------------
+
 def route_mode(state: ResearchState) -> str:
     """Router: research vs reasoning sub-graph."""
     return "generate_plan" if state.get("reasoning_mode") else "think"
 
 
 def after_think(state: ResearchState) -> str:
-    """After think: finalize, execute tool, or handle parse error."""
-    if state.get("final_answer"):
+    """After think: route to answer, tool execution, or handle error."""
+    # Check for "answer" tool
+    actions = state.get("parsed_actions", [])
+    for name, _ in actions:
+        if name == "answer":
+            return "generate_answer"
+            
+    if state.get("final_answer"): # Fallback if model still uses final_answer field
         return "finalize_research"
+        
     if state.get("iteration", 0) >= MAX_RESEARCH_ITERATIONS:
         return "finalize_research"
-    if state.get("parsed_actions") or state.get("parsed_action"):
+        
+    if actions:
         return "execute_tool"
+        
     return "handle_no_action"
 
 
@@ -853,6 +916,7 @@ def build_research_graph(
     workflow.add_node("think", nodes.think)
     workflow.add_node("execute_tool", nodes.execute_tool)
     workflow.add_node("handle_no_action", nodes.handle_no_action)
+    workflow.add_node("generate_answer", nodes.generate_answer)
     workflow.add_node("finalize_research", nodes.finalize_research)
     # Reasoning
     workflow.add_node("generate_plan", nodes.generate_plan)
@@ -873,9 +937,11 @@ def build_research_graph(
         "finalize_research": "finalize_research",
         "execute_tool": "execute_tool",
         "handle_no_action": "handle_no_action",
+        "generate_answer": "generate_answer",
     })
     workflow.add_edge("execute_tool", "think")
     workflow.add_edge("handle_no_action", "think")
+    workflow.add_edge("generate_answer", "finalize_research")
     workflow.add_edge("finalize_research", END)
 
     # Reasoning sub-graph

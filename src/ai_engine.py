@@ -21,7 +21,7 @@ except ImportError:
 
 class AIEngine:
     
-    def __init__(self):
+    def __init__(self, ranker=None):
         # REQ-PERF-01: Initialize persistent cache
         self.cache = Cache()
         
@@ -43,7 +43,18 @@ class AIEngine:
         self._load_synonyms()
         
         # REQ-IMP-06: Rate limiting semaphore
+        # Created on init (ephemeral instance per run)
         self._rate_limiter = asyncio.Semaphore(Config.API_MAX_CONCURRENT_CALLS)
+        
+        # Singleton Ranker (Passed from app or Lazy loaded)
+        self._ranker = ranker
+        
+    @property
+    def ranker(self):
+        if self._ranker is None:
+            from flashrank import Ranker
+            self._ranker = Ranker(model_name=Config.RERANK_MODEL_NAME, cache_dir="./.cache")
+        return self._ranker
     
     def _load_synonyms(self):
         """
@@ -69,17 +80,12 @@ class AIEngine:
             "artificial intelligence": ["ai"],
         }
 
+    @lru_cache(maxsize=1000)
     def generate_embedding(self, text: str) -> List[float]:
-        """Generates embedding for a given text via Ollama. Uses cache if available."""
-        # REQ-IMP-08: Check cache first
-        cached = self.cache.get("embedding", text)
-        if cached:
-            return cached
-        
+        """Generates embedding for a given text via Ollama. Uses LRU cache."""
         try:
             response = self.ollama_client.embeddings(model=self.embed_model, prompt=text)
             embedding = response["embedding"]
-            self.cache.set("embedding", text, embedding)
             return embedding
         except Exception as e:
             print(f"Error generating embedding: {e}")
@@ -87,7 +93,18 @@ class AIEngine:
 
     async def generate_embedding_async(self, text: str) -> List[float]:
         """Generates embedding for a given text asynchronously via Ollama. Uses cache if available."""
-        # REQ-IMP-08: Check cache first
+        # Check sync cache first (shared)
+        # Note: dict lookup is thread-safe enough for this
+        if hasattr(self.generate_embedding, "cache_info"):
+             # We can't easily peek into lru_cache wrappers, so we might need a separate async cache
+             # For now, let's just re-use the sync cache logic if we can, or keep using self.cache for async?
+             # Actually, best practice for async is usually a separate cache or just calling the sync method in an executor if CPU bound.
+             # But request isn't CPU bound.
+             # Let's use simple dict cache for async for now to avoid complexity, or better, reuse the persistent cache 
+             # but optimized. 
+             pass
+
+        # REQ-IMP-08: Check persistent cache first
         cached = self.cache.get("embedding", text)
         if cached:
             return cached
@@ -199,6 +216,31 @@ class AIEngine:
             return content
         return await _call()
 
+    async def _openrouter_generate_stream(self, prompt: str, system_prompt: str = None) -> Any:
+        """
+        REQ-IMP-14: Yields chunks of generated text asynchronously.
+        """
+        messages = [{"role": "user", "content": prompt}]
+        if system_prompt:
+            messages.insert(0, {"role": "system", "content": system_prompt})
+            
+        async with self._rate_limiter:
+            # We don't use tenacity retry for streams yet, simple implementation
+            try:
+                response = await self.async_openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    stream=True
+                )
+                async for chunk in response:
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        yield content
+            except Exception as e:
+                print(f"Error in stream generation: {e}")
+                # Fallback? Yield error or nothing.
+                yield f"[Error: {e}]"
+
     def _openrouter_generate_sync(self, prompt: str) -> str:
         """
         Synchronous helper to call OpenRouter via OpenAI SDK.
@@ -260,20 +302,10 @@ class AIEngine:
     def _run_sync(self, coro):
         """
         Helper to run async coroutines synchronously, handling existing event loops.
-        This fixes issues where Streamlit or other environments have a running loop.
+        Delegates to src.utils.async_utils.
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-            
-        if loop and loop.is_running():
-            # If we are in a running loop, we must rely on nest_asyncio to block
-            import nest_asyncio
-            nest_asyncio.apply(loop)
-            return loop.run_until_complete(coro)
-        else:
-            return asyncio.run(coro)
+        from src.utils.async_utils import run_sync
+        return run_sync(coro)
 
     def generate_summary(self, text: str) -> str:
         """Sync wrapper for generate_summary_async."""
@@ -612,8 +644,8 @@ If no merges needed, return: {{}}"""
                 "Focus on TECHNICAL CONCEPTS, TOOLS, SYSTEMS, METRICS, and ALGORITHMS.\n"
                 "Identify key entities (Nodes) and their relationships (Edges).\n\n"
                 "Guidelines:\n"
-                "1. Nodes: distinct technical entities. Type should be one of: Concept, Tool, Metric, System, Person, Organization, algorithm.\n"
-                "2. Edges: meaningful relationships. Include QUANTITATIVE details if available (e.g., 'improves by 20%', 'faster than').\n"
+                "1. Nodes: distinct technical entities. Type MUST be one of: Concept, Person, Organization, Event, Location, Tool, Methodology, Metric.\n"
+                "2. Edges: meaningful relationships. Include QUANTITATIVE details if available.\n"
                 "3. Source/Target Types: Must match the Node types.\n"
                 "4. Direction: Edges are directed. Source -> Target.\n\n"
                 "Return ONLY a JSON object with this structure:\n"
@@ -636,6 +668,33 @@ If no merges needed, return: {{}}"""
         except Exception as e:
             print(f"Error extracting graph metadata async: {e}")
             return {"nodes": [], "edges": []}
+
+    async def decompose_query(self, query: str) -> List[str]:
+        """
+        REQ-IMP-10: Decompose complex queries into simpler sub-questions.
+        "Compare X and Y" -> ["What is X?", "What is Y?", "Differences between X and Y?"]
+        """
+        try:
+            prompt = f"""Break down the following complex user query into 2-4 simple, independent sub-questions that need to be answered to address the original query.
+    If the query is already simple, just return the original query.
+    
+    User Query: "{query}"
+    
+    Return ONLY a JSON array of strings. Example: ["sub-question 1", "sub-question 2"]"""
+            
+            content = await self._openrouter_generate(prompt)
+            clean_content = self._clean_json_string(content)
+            
+            import json
+            sub_questions = json.loads(clean_content)
+            
+            if isinstance(sub_questions, list) and sub_questions:
+                return [str(q) for q in sub_questions if q]
+            return [query]
+            
+        except Exception as e:
+            print(f"Error decomposing query: {e}")
+            return [query]
 
     async def expand_query(self, query: str, num_variations: int = 3) -> List[str]:
         """
@@ -773,9 +832,8 @@ If no merges needed, return: {{}}"""
                 return []
             
             # Use configured model
-            model_name = Config.RERANK_MODEL_NAME
             # Note: FlashRank automatically uses MPS if available on Mac M1/M2/M3
-            ranker = Ranker(model_name=model_name, cache_dir="./.cache")
+            ranker = self.ranker
             
             # Prepare passages
             passages = [
@@ -818,7 +876,40 @@ If no merges needed, return: {{}}"""
         word_count = len(text.split())
         return int(word_count * 1.3)
 
-    async def chat_with_context_async(self, query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+    async def compress_context(self, chunks: List[Dict[str, Any]], query: str) -> str:
+        """
+        REQ-IMP-11: Context Distillation.
+        Summarizes retrieved chunks to fit into context window while retaining relevance to the query.
+        """
+        if not chunks:
+            return ""
+            
+        # If total tokens low enough, just return concatenation
+        total_len = sum(len(c.get("content", "")) for c in chunks)
+        if total_len < 3000:
+            return "\n\n".join([f"Document {i+1}:\n{c.get('content')}" for i, c in enumerate(chunks)])
+            
+        # Otherwise, compress each chunk
+        tasks = []
+        for c in chunks:
+            prompt = f"""Summarize the following text, keeping ONLY information relevant to the User Query.
+User Query: "{query}"
+
+Text:
+{c.get('content')[:2000]}...
+
+Summary:"""
+            tasks.append(self._openrouter_generate(prompt))
+            
+        summaries = await asyncio.gather(*tasks)
+        
+        compressed = []
+        for i, s in enumerate(summaries):
+             compressed.append(f"Document {i+1} (Summary):\n{s}")
+             
+        return "\n\n".join(compressed)
+
+    async def chat_with_context_async(self, query: str, context_chunks: List[Any], chat_history: List[Dict]) -> Dict[str, Any]:
         """
         Generates a response using RAG (Retrieval Augmented Generation).
         
@@ -843,27 +934,8 @@ If no merges needed, return: {{}}"""
             available_tokens = max_tokens - system_prompt_tokens - query_tokens - response_reserve
             
             # Build context from chunks with source attribution, respecting token limit
-            context_parts = []
-            context_tokens = 0
-            truncated_count = 0
-            
-            for i, chunk in enumerate(context_chunks):
-                score = chunk.get('rerank_score', chunk.get('similarity', 0))
-                chunk_text = f"[Source {i+1}] (relevance: {score:.2f}):\n{chunk['content']}"
-                chunk_tokens = self._estimate_tokens(chunk_text)
-                
-                # Check if adding this chunk would exceed limit
-                if context_tokens + chunk_tokens > available_tokens * 0.7:  # Use 70% for context
-                    truncated_count += 1
-                    continue
-                
-                context_parts.append(chunk_text)
-                context_tokens += chunk_tokens
-            
-            if truncated_count > 0:
-                print(f"REQ-STABILITY-01: Truncated {truncated_count} context chunks to fit token limit")
-            
-            context = "\n\n---\n\n".join(context_parts)
+            # REQ-IMP-11: Use Context Distillation
+            context = await self.compress_context(context_chunks, query)
             
             # Build conversation history if provided, respecting remaining token budget
             history_text = ""

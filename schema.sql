@@ -32,6 +32,18 @@ create table file_chunks (
   chunk_level integer default 0 -- Hierarchical: 0=root/document, 1=section, 2=paragraph, etc.
 );
 
+-- Sections Table (Hierarchical Structure)
+create table sections (
+  id uuid primary key default gen_random_uuid(),
+  file_id uuid references files(id) on delete cascade not null,
+  title text not null,
+  level integer default 1,
+  parent_section_id uuid references sections(id)
+);
+
+-- Link chunks to sections
+alter table file_chunks add column section_id uuid references sections(id);
+
 -- Keywords table
 create table keywords (
   id uuid primary key default gen_random_uuid(),

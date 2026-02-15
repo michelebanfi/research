@@ -78,8 +78,15 @@ def render_chat_tab(db, ai):
                     })
                     
                     # Callback for Live Updates
+                    full_response = ""
                     def on_event(event: dict):
+                        nonlocal full_response
                         st.session_state.agent_events.append(event)
+                        
+                        if event["type"] == "token":
+                            full_response += event["content"]
+                            message_placeholder.markdown(full_response + "▌")
+                        
                         # Live update the right column
                         with process_container.container():
                             render_process_monitor()
@@ -97,10 +104,9 @@ def render_chat_tab(db, ai):
                         # Store graph for visualization tab
                         st.session_state.agent_graph = agent._graph
                         
-                        # Run the agent — use existing event loop to avoid
-                        # unclosed-loop ResourceWarnings from asyncio.run()
-                        loop = asyncio.get_event_loop()
-                        result = loop.run_until_complete(agent.run(
+                        # Run the agent — use centralized runner to handle loops safely
+                        from src.utils.async_utils import run_sync
+                        result = run_sync(agent.run(
                             prompt,
                             st.session_state.chat_history[:-1],
                             reasoning_mode=reasoning_mode

@@ -6,11 +6,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Fix event loop issues in Streamlit
-import nest_asyncio
-nest_asyncio.apply()
+from src.utils.async_utils import get_or_create_event_loop
+# Ensure loop exists before unrelated async inits
+loop = get_or_create_event_loop()
 
 from src.database import DatabaseClient
 from src.ai_engine import AIEngine
+from src.config import Config
 
 # Load environment variables
 load_dotenv()
@@ -27,11 +29,22 @@ def get_db_client():
         return None
 
 @st.cache_resource
+def get_shared_ranker():
+    """Cache the heavy Re-ranker model."""
+    from flashrank import Ranker
+    return Ranker(model_name=Config.RERANK_MODEL_NAME, cache_dir="./.cache")
+
 def get_ai_engine():
-    return AIEngine()
+    """
+    Ephemerally create AIEngine to bind asyncio objects (Semaphores) to current loop.
+    Fail-safe against Streamlit threading model.
+    Pass cached ranker to avoid reloading heavy model.
+    """
+    ranker = get_shared_ranker()
+    return AIEngine(ranker=ranker)
 
 db = get_db_client()
-ai = get_ai_engine()
+ai = get_ai_engine() # No longer cached, but lightweight
 
 # --- Session State Initialization ---
 if "chat_history" not in st.session_state:

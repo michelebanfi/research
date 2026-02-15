@@ -145,6 +145,28 @@ async def run_code(
             "PATH": os.environ.get("PATH", ""),
         }
         
+        # REQ-SEC-03: Set resource limits in child process
+        def set_limits():
+            import resource
+            try:
+                # CPU Limit (soft, hard) in seconds
+                # Slower than timeout_s to allow graceful python timeout handling?
+                # Actually, set CPU limit to slightly more than timeout to kill runaways
+                cpu_limit = int(timeout_s * 1.5) + 1
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+                
+                # Memory Limit (512MB)
+                mem_limit = 512 * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (mem_limit, mem_limit))
+                
+                # Process Limit (prevent fork bombs)
+                # resource.setrlimit(resource.RLIMIT_NPROC, (1, 1)) 
+                # Note: NPROC limit 1 might prevent python from starting threads/subprocesses needed for runtime
+                # so we skip it for now or set it higher (e.g. 50)
+                
+            except Exception:
+                pass
+
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
             script_path,
@@ -152,6 +174,7 @@ async def run_code(
             stderr=asyncio.subprocess.PIPE,
             cwd=td,
             env=env,
+            preexec_fn=set_limits
         )
         
         try:
