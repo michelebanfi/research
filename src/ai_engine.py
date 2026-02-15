@@ -796,7 +796,7 @@ If no merges needed, return: {{}}"""
                 rid = item['id']
                 if rid in id_to_result:
                     original_res = id_to_result[rid]
-                    original_res['rerank_score'] = item['score']
+                    original_res['rerank_score'] = float(item['score'])
                     final_results.append(original_res)
             
             return final_results[:top_k]

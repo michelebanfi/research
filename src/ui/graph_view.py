@@ -39,11 +39,11 @@ graph TD
         after_verify -->|"fail"| generate_code
     end
 
-    finalize_research --> finish(["End"]):::last
+    finalize_research --> finish(["End"])
     finalize_reasoning --> finish
 
-    classDef first fill-opacity:0
-    classDef last fill:#bfb6fc
+    style start fill-opacity:0,stroke:#333,stroke-width:2px;
+    style finish fill:#bfb6fc,stroke:#333,stroke-width:2px;
 """
 
 

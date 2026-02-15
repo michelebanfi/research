@@ -370,33 +370,71 @@ GUIDELINES:
                 # Actually, the original code ran the search AGAIN to get objects for UI.
                 # That is inefficient. We should have the tool return objects if possible, 
                 # but tools return strings for LLM.
-                # NOTE: For now, we keep the Side-Effect logic (re-running for UI) 
-                # or better, parse the observation if it was JSON?
-                # The original code re-ran `db.search_vectors`.
-                # We can replicate that side-effect logic here for each search tool.
-                
-                # Re-run for UI artifacts (chunks)
+                # Re-run for UI artifacts (chunks) with Hybrid Search
                 try:
-                    emb = self.ai.generate_embedding(actions[i][1]) # argument
+                    q_str = actions[i][1] # argument
+                    emb = self.ai.generate_embedding(q_str)
                     chunks = []
                     if emb:
+                        # Use same logic as retrieve_advanced: Hybrid Search for UI
+                        # REQ-OBSERVABILITY: Lowered threshold to 0.15 to show weak matches in UI
                         chunks = self.db.search_vectors(
-                            emb, match_threshold=0.3, project_id=self.project_id, match_count=5
+                            emb, 
+                            match_threshold=0.15, 
+                            project_id=self.project_id, 
+                            match_count=10 if self.tools.do_rerank else 5,
+                            keyword_query=q_str 
                         )
-                        # We don't rerank here again to save time, or do we?
-                        # Original code did. Let's skip heavy rerank for UI visualization to be fast.
-                        for c in chunks: c["source"] = "vector"
-                        retrieved_chunks.extend(self._sanitize_for_state(chunks))
                         
-                        # Auto-fallback check
-                        best = float(max((c.get("similarity", 0) for c in chunks), default=0))
-                        if best < 0.3 and "web_search" not in [t[0] for t in actions] and "web_search" not in tools_used:
-                             # We can't trigger it *in parallel* easily now, but we could suggest it for next turn.
-                             # Or append a clear message.
-                             parsed_obs = observation + "\n[System Note: Low relevance. Consider using web_search next.]"
-                             # We won't auto-trigger to avoid infinite loops or complexity in parallel gather.
-                except Exception:
-                    pass
+                        if self.tools.do_rerank and len(chunks) > 1:
+                            try:
+                                chunks = self.ai.rerank_results(q_str, chunks, top_k=5)
+                            except Exception as e:
+                                print(f"Re-ranking for UI failed: {e}")
+
+                        self._emit("search", f"Background search returned {len(chunks)} chunks.",
+                                   {"count": len(chunks)})
+                        for c in chunks:
+                            c["source"] = "vector"
+                        
+                        if not chunks:
+                            # Explicitly show "No Results" in UI
+                            chunks.append({
+                                "id": f"no_res_{int(time.time())}",
+                                "content": "No relevant documents found in the knowledge base.",
+                                "similarity": 0.0,
+                                "source": "vector",
+                                "file_path": "N/A"
+                            })
+
+                        retrieved_chunks.extend(self._sanitize_for_state(chunks))
+
+                    # Auto web-search fallback on low relevance
+                    best = 0.0
+                    if chunks:
+                        # Filter out the placeholder 0.0 chunk from 'best' calculation if it's the only one
+                        valid_scores = [c.get("rerank_score", c.get("similarity", 0)) for c in chunks if c.get("similarity", 0) > 0]
+                        best = float(max(valid_scores)) if valid_scores else 0.0
+                    
+                    if best < 0.3 and "web_search" not in [t[0] for t in actions] and "web_search" not in tools_used:
+                        logger.log_step("auto_fallback", f"Low relevance ({best:.2f}), triggering web_search")
+                        # Suggest web search for next turn (can't easily trigger parallel here without recursion)
+                        parsed_obs = observation + "\n[System Note: Only found low relevance local info. Consider using 'web_search' in the next step.]"
+                        
+                except Exception as e:
+                     print(f"UI Vector Search Artifact Error: {e}")
+
+            elif tool_name == "web_search":
+                # Structure web results for Context UI
+                # Web search returns a string, but we can fake a 'chunk' for the UI
+                web_chunk = {
+                    "id": f"web_{int(time.time())}_{i}",
+                    "content": observation,
+                    "source": "web",
+                    "similarity": 1.0,
+                    "metadata": {"url": "External Web Source", "query": actions[i][1]}
+                }
+                retrieved_chunks.append(web_chunk)
 
             elif tool_name == "graph_search":
                 matched_concepts.extend([c.strip() for c in actions[i][1].split(",")])

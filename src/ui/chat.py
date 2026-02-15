@@ -64,8 +64,18 @@ def render_chat_tab(db, ai):
                     message_placeholder = st.empty()
                     status_placeholder = st.empty()
                     
-                    # Clear previous events for new run
-                    st.session_state.agent_events = []
+                    # Clear previous events for new run? 
+                    # User requested to keep history. We won't clear it here.
+                    # st.session_state.agent_events = [] 
+                    if "agent_events" not in st.session_state:
+                         st.session_state.agent_events = []
+                    
+                    # Add a separator for new run
+                    st.session_state.agent_events.append({
+                        "type": "separator", 
+                        "content": f"--- New Query: {prompt} ---",
+                        "metadata": {}
+                    })
                     
                     # Callback for Live Updates
                     def on_event(event: dict):
@@ -152,7 +162,12 @@ def render_context_panel():
                 rerank_score = chunk.get('rerank_score')
                 
                 # Source badge
-                source_badge = "Vector Search" if source_type == 'vector' else "Graph Retrieval"
+                source_badge = "Vector Search"
+                if source_type == 'web':
+                     source_badge = "Web Search"
+                elif source_type == 'graph':
+                     source_badge = "Graph Retrieval"
+                     
                 st.caption(f"**{source_badge}**")
                 
                 if rerank_score is not None:

@@ -324,7 +324,8 @@ class ToolRegistry:
                 results = []
                 with DDGS() as ddgs:
                     # Get up to 5 text results
-                    for r in ddgs.text(query, max_results=5):
+                    # REQ-FIX-02: Use backend="lite" to avoid SSL fingerprinting issues (0x304 error)
+                    for r in ddgs.text(query, max_results=5, backend="lite"):
                         results.append(r)
                 
                 if not results:
