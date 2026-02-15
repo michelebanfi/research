@@ -257,9 +257,27 @@ class AIEngine:
             return "Summary generation failed."
 
     # Synchronous wrapper for generate_summary_async
+    def _run_sync(self, coro):
+        """
+        Helper to run async coroutines synchronously, handling existing event loops.
+        This fixes issues where Streamlit or other environments have a running loop.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+            
+        if loop and loop.is_running():
+            # If we are in a running loop, we must rely on nest_asyncio to block
+            import nest_asyncio
+            nest_asyncio.apply(loop)
+            return loop.run_until_complete(coro)
+        else:
+            return asyncio.run(coro)
+
     def generate_summary(self, text: str) -> str:
-        """Synchronous wrapper for generate_summary_async."""
-        return asyncio.run(self.generate_summary_async(text))
+        """Sync wrapper for generate_summary_async."""
+        return self._run_sync(self.generate_summary_async(text))
     
     async def extract_key_claims_async(self, text: str, section_type: str = "abstract") -> List[str]:
         """
@@ -590,18 +608,21 @@ If no merges needed, return: {{}}"""
         try:
             # REQ-DATA-01: Updated prompt to request source_type and target_type for edges
             prompt = (
-                "Analyze the following technical content and extract a Knowledge Graph.\n"
-                "Focus on TECHNICAL CONCEPTS, TOOLS, SYSTEMS, and ALGORITHMS.\n"
-                "IGNORE Authors, Dates, Institutions, and generic terms.\n"
-                "Identify key entities (Nodes) and their relationships (Edges).\n"
+                "Analyze the following technical content and extract a structured Knowledge Graph.\n"
+                "Focus on TECHNICAL CONCEPTS, TOOLS, SYSTEMS, METRICS, and ALGORITHMS.\n"
+                "Identify key entities (Nodes) and their relationships (Edges).\n\n"
+                "Guidelines:\n"
+                "1. Nodes: distinct technical entities. Type should be one of: Concept, Tool, Metric, System, Person, Organization, algorithm.\n"
+                "2. Edges: meaningful relationships. Include QUANTITATIVE details if available (e.g., 'improves by 20%', 'faster than').\n"
+                "3. Source/Target Types: Must match the Node types.\n"
+                "4. Direction: Edges are directed. Source -> Target.\n\n"
                 "Return ONLY a JSON object with this structure:\n"
                 "{\n"
-                '  "nodes": [{"name": "Entity Name", "type": "Concept|Tool|Metric|System|Person"}],\n'
-                '  "edges": [{"source": "Entity Name", "target": "Entity Name", "relation": "relationship_type", "source_type": "type of source", "target_type": "type of target"}]\n'
+                '  "nodes": [{"name": "Entity Name", "type": "Node Type"}],\n'
+                '  "edges": [{"source": "Entity Name", "target": "Entity Name", "relation": "relationship_type", "source_type": "Node Type", "target_type": "Node Type", "description": "optional context"}]\n'
                 "}\n"
-                "IMPORTANT: Include source_type and target_type in each edge to disambiguate entities with the same name.\n"
-                "Ensure the JSON is valid and contains no other text.\n\n"
-                f"{text[:4000]}"
+                "Ensure valid JSON. No markdown formatting.\n\n"
+                f"Text:\n{text[:6000]}"
             )
             content = await self._openrouter_generate(prompt)
             
@@ -647,7 +668,7 @@ If no merges needed, return: {{}}"""
 
     def extract_metadata_graph(self, text: str) -> Dict[str, Any]:
         """Synchronous wrapper for extract_metadata_graph_async."""
-        return asyncio.run(self.extract_metadata_graph_async(text))
+        return self._run_sync(self.extract_metadata_graph_async(text))
 
 
     def _merge_search_results(self, all_results: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -703,19 +724,24 @@ If no merges needed, return: {{}}"""
         if callback and len(queries) > 1:
              callback({"type": "search", "content": f"Expanded terms: {', '.join(queries[1:])}", "metadata": {"stage": "expansion", "queries": queries}})
         
-        # 2. Parallel Search
+        # 2. Parallel Search with Hybrid Ranking
         search_tasks = []
         for q in queries:
             async def search_single(q_str):
-                # Generate embedding
+                # Generate embedding for Semantic Search
                 embedding = await self.generate_embedding_async(q_str)
-                # Search DB (using synchronous client in async wrapper if needed)
-                # Note: db_client.search_vectors is sync. We should run it in executor or similar if blocking
-                # For now, running sync in loop
-                return db_client.search_vectors(embedding, match_threshold=0.3, project_id=project_id, match_count=limit*2)
-            
+                
+                # Use the query string itself for Keyword Search (FTS)
+                # The RPC will combine Vector Similarity + FTS Rank
+                return db_client.search_vectors(
+                    query_embedding=embedding,
+                    match_threshold=0.3, 
+                    project_id=project_id, 
+                    match_count=limit*2,
+                    keyword_query=q_str # Enable Hybrid Search
+                )
             search_tasks.append(search_single(q))
-            
+        
         all_results = await asyncio.gather(*search_tasks)
         
         # 3. Merge Results
@@ -894,9 +920,9 @@ Instructions:
                 "error": True
             }
 
-    def chat_with_context(self, query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
-        """Synchronous wrapper for chat_with_context_async."""
-        return asyncio.run(self.chat_with_context_async(query, context_chunks, chat_history))
+    def chat_with_context(self, query: str, context_chunks: List[Dict[str, Any]], chat_history: List[Dict[str, str]] = None) -> str:
+        """Sync wrapper for chatting."""
+        return self._run_sync(self.chat_with_context_async(query, context_chunks, chat_history))
 
     async def determine_intent(self, query: str) -> str:
         """

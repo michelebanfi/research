@@ -341,3 +341,78 @@ begin
 end;
 $$;
 
+
+-- REQ-SEARCH-01: Full-Text Search (FTS) support
+-- Add tsvector column to file_chunks if it doesn't exist
+alter table file_chunks add column if not exists fts tsvector;
+
+-- Create index for FTS
+create index if not exists file_chunks_fts_idx on file_chunks using gin (fts);
+
+-- Trigger to automatically update fts column on content change
+create or replace function file_chunks_tsvector_trigger() returns trigger as $$
+begin
+  new.fts := to_tsvector('english', new.content);
+  return new;
+end
+$$ language plpgsql;
+
+drop trigger if exists tsvectorupdate on file_chunks;
+create trigger tsvectorupdate before insert or update
+on file_chunks for each row execute function file_chunks_tsvector_trigger();
+
+-- Backfill existing chunks (optional, but good practice)
+update file_chunks set fts = to_tsvector('english', content) where fts is null;
+
+
+-- REQ-PERF-02: Optimized Composite Search RPC (Fixes N+1 problem)
+-- Returns chunk + file metadata + similarity + keyword rank in ONE call
+drop function if exists search_file_chunks_rpc(vector, float, int, uuid, boolean, text);
+
+create or replace function search_file_chunks_rpc (
+  query_embedding vector(1024),
+  match_threshold float,
+  match_count int,
+  filter_project_id uuid,
+  include_references boolean default false,
+  keyword_query text default null
+)
+returns table (
+  id uuid,
+  file_id uuid,
+  content text,
+  similarity float,
+  metadata jsonb,
+  file_path text,
+  file_name text,
+  chunk_level integer,
+  rank float -- Combined rank
+)
+language plpgsql
+as $$
+begin
+  return query
+  select
+    fc.id,
+    fc.file_id,
+    fc.content,
+    1 - (fc.embedding <=> query_embedding) as similarity,
+    fc.metadata,
+    f.path as file_path,
+    f.name as file_name,
+    fc.chunk_level,
+    (
+      (1 - (fc.embedding <=> query_embedding)) * 0.7 + -- Semantic weight
+      (case when keyword_query is not null then ts_rank(fc.fts, plainto_tsquery('english', keyword_query)) else 0 end) * 0.3 -- Keyword weight
+    ) as rank
+  from file_chunks fc
+  join files f on f.id = fc.file_id
+  where 1 - (fc.embedding <=> query_embedding) > match_threshold
+  and f.project_id = filter_project_id
+  and (include_references = true or fc.is_reference = false)
+  and (keyword_query is null or fc.fts @@ plainto_tsquery('english', keyword_query))
+  order by rank desc
+  limit match_count;
+end;
+$$;
+
