@@ -175,16 +175,17 @@ def process_upload(uploaded_file, db, ai):
                 raise e
             
             # Validate embeddings
-            valid_chunks = []
+            # Validate embeddings and keep all chunks
             for i, emb in enumerate(embeddings):
                 if emb and len(emb) > 0:
                     chunks[i]['embedding'] = emb
-                    valid_chunks.append(chunks[i])
                 else:
-                    st.warning(f"Chunk {i} had empty embedding, skipping.")
+                    # Keep the chunk even if embedding failed, to preserve hierarchy
+                    chunks[i]['embedding'] = None
+                    st.warning(f"Chunk {i} (level {chunks[i].get('chunk_level', '?')}) has empty embedding. Saving without vector.")
             
-            chunks = valid_chunks
-            st.write(f"Generated {len(chunks)} valid embeddings.")
+            # No filtering - keep all chunks to maintain parent-child relationships
+            st.write(f"Generated embeddings for {len([c for c in chunks if c.get('embedding')])} of {len(chunks)} chunks.")
             st.text_area("Summary", summary, height=100)
             
             # Graph Data
