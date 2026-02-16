@@ -724,8 +724,6 @@ Respond with ONLY Python code in a ```python``` block. No explanations."""
 
         self._emit("thought", "Verifying result...", {"phase": "verify"})
 
-        self._emit("thought", "Verifying result...", {"phase": "verify"})
-
         prompt = f"""Verify if the following execution output meets the verification criteria defined in the plan.
 
 PLAN VERIFICATION LOGIC:

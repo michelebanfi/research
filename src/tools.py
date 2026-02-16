@@ -112,26 +112,41 @@ class ToolRegistry:
         REQ-FIX-01: Now async-native.
         
         Generates embedding for the query and searches for similar chunks.
+        Optionally expands query for better recall using multi-query retrieval.
         Optionally re-ranks results using FlashRank for better relevance.
         Returns formatted results with source information.
         """
         self._notify("vector_search", "start")
         
         try:
-            # Generate embedding for the query (async)
-            query_embedding = await self.ai.generate_embedding_async(query)
+            # REQ-ENH-01: Expand query for better recall
+            expanded_queries = await self.ai.expand_query(query, num_variations=2)
+            self._notify("vector_search", f"Expanded to {len(expanded_queries)} queries")
             
-            if not query_embedding:
+            # Generate embeddings and search for all query variations
+            all_results = []
+            for q in expanded_queries:
+                query_embedding = await self.ai.generate_embedding_async(q)
+                if query_embedding:
+                    # Use keyword query for hybrid search
+                    results = self.db.search_vectors(
+                        query_embedding,
+                        match_threshold=0.3,
+                        project_id=self.project_id,
+                        match_count=10,
+                        keyword_query=q  # Hybrid: vector + keyword
+                    )
+                    if results:
+                        all_results.append((q, results))
+            
+            if not all_results:
                 self._notify("vector_search", "complete")
                 return "Error: Could not generate embedding for query."
             
-            # Search vectors
-            results = self.db.search_vectors(
-                query_embedding,
-                match_threshold=0.3,
-                project_id=self.project_id,
-                match_count=10 if self.do_rerank else 5  # Get more if re-ranking
-            )
+            # Merge results using Reciprocal Rank Fusion
+            # Use the AI engine's merge function
+            result_lists = [r[1] for r in all_results]
+            results = self.ai._merge_search_results(result_lists)
             
             if not results:
                 self._notify("vector_search", "complete")
@@ -199,19 +214,19 @@ class ToolRegistry:
             node_ids = [n['id'] for n in matching_nodes]
             matched_names = [n['name'] for n in matching_nodes]
             
-            # Get 1-hop related concepts
-            related_concepts = self.db.get_related_concepts(node_ids, max_hops=1)
-            related_names = [n['name'] for n in related_concepts[:15]] if related_concepts else []  # REQ-IMP-04: Increased
+            # REQ-ENH-02: Get 2-hop related concepts for richer context
+            related_concepts = self.db.get_related_concepts(node_ids, max_hops=2)
+            related_names = [n['name'] for n in related_concepts[:20]] if related_concepts else []
             
-            # Expand node_ids with related concepts
+            # Expand node_ids with related concepts (both 1-hop and 2-hop)
             if related_concepts:
-                node_ids.extend([n['id'] for n in related_concepts[:10]])  # REQ-IMP-04: Increased from 5
+                node_ids.extend([n['id'] for n in related_concepts[:15]])
             
             # Get chunks connected to these concepts
             graph_chunks = self.db.get_chunks_by_concepts(
                 node_ids,
                 self.project_id,
-                limit=20  # REQ-IMP-04: Increased from 5
+                limit=25
             )
             
             # Format output
@@ -220,7 +235,7 @@ class ToolRegistry:
             output_parts.append(f"**Matched Concepts:** {', '.join(matched_names)}")
             
             if related_names:
-                output_parts.append(f"**Related Concepts (1-hop):** {', '.join(related_names)}")
+                output_parts.append(f"**Related Concepts (2-hop):** {', '.join(related_names)}")
             
             if graph_chunks:
                 output_parts.append(f"\n**Connected Knowledge ({len(graph_chunks)} chunks):**\n")

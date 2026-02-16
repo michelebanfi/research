@@ -93,17 +93,6 @@ class AIEngine:
 
     async def generate_embedding_async(self, text: str) -> List[float]:
         """Generates embedding for a given text asynchronously via Ollama. Uses cache if available."""
-        # Check sync cache first (shared)
-        # Note: dict lookup is thread-safe enough for this
-        if hasattr(self.generate_embedding, "cache_info"):
-             # We can't easily peek into lru_cache wrappers, so we might need a separate async cache
-             # For now, let's just re-use the sync cache logic if we can, or keep using self.cache for async?
-             # Actually, best practice for async is usually a separate cache or just calling the sync method in an executor if CPU bound.
-             # But request isn't CPU bound.
-             # Let's use simple dict cache for async for now to avoid complexity, or better, reuse the persistent cache 
-             # but optimized. 
-             pass
-
         # REQ-IMP-08: Check persistent cache first
         cached = self.cache.get("embedding", text)
         if cached:
@@ -906,8 +895,72 @@ Summary:"""
         compressed = []
         for i, s in enumerate(summaries):
              compressed.append(f"Document {i+1} (Summary):\n{s}")
-             
+              
         return "\n\n".join(compressed)
+
+    async def evaluate_retrieval_quality(
+        self, 
+        query: str, 
+        chunks: List[Dict[str, Any]]
+    ) -> Tuple[bool, str, List[Dict[str, Any]]]:
+        """
+        REQ-ENH-03: Self-RAG style retrieval evaluation.
+        
+        Evaluates whether the retrieved context is sufficient to answer the query.
+        Returns:
+            - is_sufficient: Whether context can answer the query
+            - reason: Explanation of the evaluation
+            - enhanced_chunks: Original chunks or additional web search suggestion
+        """
+        if not chunks:
+            return False, "No chunks retrieved.", []
+        
+        # Prepare context for evaluation
+        context = "\n\n".join([
+            f"[Source {i+1}]: {c.get('content', '')[:500]}" 
+            for i, c in enumerate(chunks[:5])  # Evaluate top 5
+        ])
+        
+        prompt = f"""Evaluate if the retrieved context is sufficient to answer the user's query.
+
+USER QUERY: {query}
+
+RETRIEVED CONTEXT:
+{context}
+
+Respond with a JSON object:
+{{
+  "is_sufficient": true or false,
+  "reason": "One sentence explaining why context is or isn't sufficient",
+  "needs_web_search": true or false,
+  "missing_topics": ["topic1", "topic2"] or []
+}}
+
+Only set needs_web_search to true if the context clearly lacks relevant information."""
+        
+        try:
+            response = await self._openrouter_generate(prompt)
+            clean_response = self._clean_json_string(response)
+            import json
+            evaluation = json.loads(clean_response)
+            
+            is_sufficient = evaluation.get("is_sufficient", True)
+            reason = evaluation.get("reason", "Evaluation completed")
+            needs_web = evaluation.get("needs_web_search", False)
+            
+            if not is_sufficient or needs_web:
+                # Return chunks with metadata indicating need for web search
+                enhanced = list(chunks)
+                for chunk in enhanced:
+                    chunk['needs_web_fallback'] = True
+                return is_sufficient, reason, enhanced
+            
+            return is_sufficient, reason, chunks
+            
+        except Exception as e:
+            print(f"Error in retrieval evaluation: {e}")
+            # Fallback: assume sufficient if evaluation fails
+            return True, "Evaluation failed, proceeding with available context", chunks
 
     async def chat_with_context_async(self, query: str, context_chunks: List[Any], chat_history: List[Dict]) -> Dict[str, Any]:
         """
@@ -936,6 +989,7 @@ Summary:"""
             # Build context from chunks with source attribution, respecting token limit
             # REQ-IMP-11: Use Context Distillation
             context = await self.compress_context(context_chunks, query)
+            context_tokens = self._estimate_tokens(context)
             
             # Build conversation history if provided, respecting remaining token budget
             history_text = ""
