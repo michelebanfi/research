@@ -58,7 +58,41 @@ if "graph_nodes" not in st.session_state:
 if "graph_edges" not in st.session_state:
     st.session_state.graph_edges = []
 if "matched_concepts" not in st.session_state:
-    st.session_state.matched_concepts = []  # REQ-01: GraphRAG matched concepts
+    st.session_state.matched_concepts = []
+if "chats" not in st.session_state:
+    st.session_state.chats = {}  # {chat_id: [{"role": "user", "content": "..."}]}
+if "current_chat_id" not in st.session_state:
+    st.session_state.current_chat_id = None
+
+def load_logo():
+    """Load and return the ASCII logo."""
+    logo_path = Path(__file__).parent / "logo.txt"
+    if logo_path.exists():
+        with open(logo_path, "r") as f:
+            return f.read()
+    return None
+
+def start_new_chat():
+    """Start a new chat session."""
+    import uuid
+    new_id = str(uuid.uuid4())
+    st.session_state.chats[new_id] = []
+    st.session_state.current_chat_id = new_id
+    st.session_state.chat_history = []
+    st.session_state.last_context = []
+    st.session_state.matched_concepts = []
+    st.rerun()
+
+def switch_chat(chat_id: str):
+    """Switch to an existing chat."""
+    st.session_state.current_chat_id = chat_id
+    st.session_state.chat_history = st.session_state.chats.get(chat_id, [])
+    st.rerun()
+
+# Handle new chat trigger from UI
+if st.session_state.get("_trigger_new_chat"):
+    st.session_state._trigger_new_chat = False
+    start_new_chat()
 
 # --- Main Layout ---
 st.title("Local-Brain Research Assistant")
@@ -98,9 +132,44 @@ with st.sidebar:
                 st.session_state.last_context = []
                 st.session_state.graph_nodes = []
                 st.session_state.graph_edges = []
+                st.session_state.chats = {}
+                st.session_state.current_chat_id = None
                 st.rerun()
             
             st.caption(f"ID: `{st.session_state.selected_project_id}`")
+        
+            # Chat history selector
+            st.markdown("---")
+            st.header("💬 Chats")
+            
+            if st.session_state.chats:
+                chat_options = list(st.session_state.chats.keys())
+                chat_labels = [f"Chat {i+1}" for i in range(len(chat_options))]
+                chat_map = dict(zip(chat_labels, chat_options))
+                
+                current_label = "New Chat"
+                if st.session_state.current_chat_id:
+                    idx = chat_options.index(st.session_state.current_chat_id) if st.session_state.current_chat_id in chat_options else -1
+                    if idx >= 0:
+                        current_label = chat_labels[idx]
+                
+                selected_label = st.selectbox(
+                    "Select Chat",
+                    options=["➕ New Chat"] + chat_labels,
+                    index=0 if current_label == "New Chat" else chat_labels.index(current_label) + 1,
+                    key="chat_selector"
+                )
+                
+                if selected_label == "➕ New Chat":
+                    start_new_chat()
+                elif selected_label in chat_map:
+                    switch_chat(chat_map[selected_label])
+                
+                # Show chat count
+                st.caption(f"{len(st.session_state.chats)} chat(s)")
+            else:
+                if st.button("➕ Start First Chat", use_container_width=True):
+                    start_new_chat()
         else:
             st.info("No projects yet.")
             st.session_state.selected_project_id = None

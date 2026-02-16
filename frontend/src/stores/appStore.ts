@@ -41,6 +41,13 @@ interface AppState {
   addMessage: (message: ChatMessage) => void
   clearChat: () => void
   
+  // Multiple chats support
+  chats: Record<string, ChatMessage[]>  // chat_id -> messages
+  currentChatId: string | null
+  setCurrentChatId: (id: string | null) => void
+  createNewChat: () => void
+  switchChat: (id: string) => void
+  
   // Agent Events
   agentEvents: AgentEvent[]
   addAgentEvent: (event: AgentEvent) => void
@@ -78,10 +85,39 @@ export const useAppStore = create<AppState>((set) => ({
   
   // Chat
   chatHistory: [],
-  addMessage: (message) => set((state) => ({ 
-    chatHistory: [...state.chatHistory, message] 
-  })),
+  addMessage: (message) => set((state) => {
+    // Update both current chat history and stored chats
+    const newHistory = [...state.chatHistory, message]
+    const newChats = { ...state.chats }
+    if (state.currentChatId) {
+      newChats[state.currentChatId] = newHistory
+    }
+    return { chatHistory: newHistory, chats: newChats }
+  }),
   clearChat: () => set({ chatHistory: [] }),
+  
+  // Multiple chats
+  chats: {},
+  currentChatId: null,
+  setCurrentChatId: (id) => set({ currentChatId: id }),
+  createNewChat: () => set((state) => {
+    const newId = crypto.randomUUID()
+    return {
+      currentChatId: newId,
+      chatHistory: [],
+      chats: { ...state.chats, [newId]: [] },
+      agentEvents: [],
+      retrievedChunks: [],
+      matchedConcepts: []
+    }
+  }),
+  switchChat: (id) => set((state) => ({
+    currentChatId: id,
+    chatHistory: state.chats[id] || [],
+    agentEvents: [],
+    retrievedChunks: [],
+    matchedConcepts: []
+  })),
   
   // Agent Events
   agentEvents: [],

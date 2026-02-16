@@ -5,11 +5,37 @@ from pathlib import Path
 from src.agent import ResearchAgent
 from src.models import ReasoningResponse
 
+def render_logo():
+    """Render the ASCII logo when no chat."""
+    logo_path = Path(__file__).parents[2] / "logo.txt"
+    if logo_path.exists():
+        try:
+            with open(logo_path, "r", encoding="utf-8") as f:
+                logo_content = f.read()
+            
+            # Display logo in a container with some styling
+            with st.container():
+                st.markdown("---")
+                st.markdown("### 🧠 Local-Brain Research Assistant")
+                st.code(logo_content, language=None)
+                st.markdown("---")
+                st.markdown("*Ask a question to begin your research session*")
+        except Exception as e:
+            st.error(f"Error loading logo: {e}")
+
 def render_chat_tab(db, ai):
     """
     Renders the Chat tab content.
     """
     st.subheader("Chat with your Knowledge Base")
+    
+    # Ensure chat_history exists
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Render logo background if no messages
+    if not st.session_state.chat_history:
+        render_logo()
     
     # Two-column layout: Chat (50%) | Process/Context (50%)
     col1, col2 = st.columns([1, 1])
@@ -31,7 +57,17 @@ def render_chat_tab(db, ai):
             render_context_panel()
 
     with col1:
-        st.subheader("💬 Chat")
+        st.markdown("### 💬 Chat")
+        
+        # New chat button in a single row
+        if st.button("➕ New Chat", key="new_chat_btn", use_container_width=True, type="primary"):
+            st.session_state._trigger_new_chat = True
+            st.rerun()
+        
+        # Welcome message when no chat history
+        if not st.session_state.chat_history:
+            st.info("👋 Welcome! Ask a question about your knowledge base or start a new chat.")
+        
         # Chat settings
         with st.expander("⚙️ Chat Settings", expanded=False):
             do_rerank = st.checkbox("Enable Re-ranking", value=True, help="Uses FlashRank to improve context relevance")
@@ -53,8 +89,15 @@ def render_chat_tab(db, ai):
         
         # Chat input
         if prompt := st.chat_input("Ask a question about your knowledge base..."):
+            # Ensure we have a chat ID
+            if not st.session_state.current_chat_id:
+                import uuid
+                st.session_state.current_chat_id = str(uuid.uuid4())
+                st.session_state.chats[st.session_state.current_chat_id] = []
+            
             # Add user message to history
             st.session_state.chat_history.append({"role": "user", "content": prompt})
+            st.session_state.chats[st.session_state.current_chat_id].append({"role": "user", "content": prompt})
             
             with chat_container:
                 with st.chat_message("user"):
@@ -93,6 +136,7 @@ def render_chat_tab(db, ai):
                             
                     try:
                         status_placeholder.markdown("🤔 **Thinking...**")
+                        print(f"[UI] Starting agent run for query: {prompt[:50]}...")
                         
                         agent = ResearchAgent(
                             ai_engine=ai,
@@ -106,11 +150,24 @@ def render_chat_tab(db, ai):
                         
                         # Run the agent — use centralized runner to handle loops safely
                         from src.utils.async_utils import run_sync
-                        result = run_sync(agent.run(
-                            prompt,
-                            st.session_state.chat_history[:-1],
-                            reasoning_mode=reasoning_mode
-                        ))
+                        import concurrent.futures
+                        
+                        # Add timeout to prevent infinite hangs
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(
+                                run_sync,
+                                agent.run(
+                                    prompt,
+                                    st.session_state.chat_history[:-1],
+                                    reasoning_mode=reasoning_mode
+                                )
+                            )
+                            try:
+                                result = future.result(timeout=120)  # 2 minute timeout
+                                print(f"[UI] Agent completed successfully")
+                            except concurrent.futures.TimeoutError:
+                                print(f"[UI] Agent timed out after 120 seconds")
+                                raise TimeoutError("Agent took too long to respond. Please try again.")
                         
                         status_placeholder.empty()
                         
@@ -136,6 +193,10 @@ def render_chat_tab(db, ai):
                             "content": assistant_message,
                             "model": model_used
                         })
+                        
+                        # Save to chats dict
+                        if st.session_state.current_chat_id:
+                            st.session_state.chats[st.session_state.current_chat_id] = list(st.session_state.chat_history)
                         
                         # Trigger rerun to sync everything
                         st.rerun()

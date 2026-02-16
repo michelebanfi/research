@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { api } from '../services/api'
-import { Folder, Plus, Moon, Sun, Cpu } from 'lucide-react'
+import { Folder, Plus, Moon, Sun, Cpu, MessageSquare } from 'lucide-react'
 
 export default function Sidebar() {
   const [isCreating, setIsCreating] = useState(false)
@@ -12,7 +12,11 @@ export default function Sidebar() {
     projects, 
     selectedProject, 
     setSelectedProject, 
-    setProjects 
+    setProjects,
+    chats,
+    currentChatId,
+    createNewChat,
+    switchChat
   } = useAppStore()
 
   const toggleTheme = () => {
@@ -130,6 +134,59 @@ export default function Sidebar() {
           )}
         </div>
       </div>
+
+      {/* Chats Section */}
+      {selectedProject && (
+        <div className="p-4 border-t border-border">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-muted uppercase tracking-wider">
+              Chats
+            </h2>
+            <button
+              onClick={createNewChat}
+              className="p-1 hover:bg-slate-200 dark:hover:bg-muted/20 rounded transition-colors"
+              title="Create new chat"
+            >
+              <Plus size={18} />
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            {Object.entries(chats).map(([chatId, messages]) => {
+              const label = messages.length > 0 
+                ? messages[0].content.slice(0, 30) + (messages[0].content.length > 30 ? '...' : '')
+                : `Chat ${Object.keys(chats).indexOf(chatId) + 1}`
+              
+              return (
+                <button
+                  key={chatId}
+                  onClick={() => switchChat(chatId)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${
+                    currentChatId === chatId
+                      ? 'bg-secondary/10 text-secondary border border-secondary/20'
+                      : 'hover:bg-slate-100 dark:hover:bg-muted/10 border border-transparent'
+                  }`}
+                >
+                  <MessageSquare size={18} className={
+                    currentChatId === chatId ? 'text-secondary' : 'text-muted'
+                  } />
+                  <span className="flex-1 truncate text-sm">{label}</span>
+                </button>
+              )
+            })}
+            
+            {Object.keys(chats).length === 0 && (
+              <button
+                onClick={createNewChat}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm text-muted hover:bg-slate-100 dark:hover:bg-muted/10 transition-colors border border-dashed border-border"
+              >
+                <Plus size={16} />
+                Start First Chat
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Selected Project Info */}
       {selectedProject && (

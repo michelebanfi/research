@@ -110,43 +110,30 @@ class ToolRegistry:
         """
         REQ-TOOL-01: Vector Search Tool
         REQ-FIX-01: Now async-native.
+        REQ-ENH-01: Supports optional query expansion for better recall.
         
         Generates embedding for the query and searches for similar chunks.
-        Optionally expands query for better recall using multi-query retrieval.
         Optionally re-ranks results using FlashRank for better relevance.
         Returns formatted results with source information.
         """
         self._notify("vector_search", "start")
         
         try:
-            # REQ-ENH-01: Expand query for better recall
-            expanded_queries = await self.ai.expand_query(query, num_variations=2)
-            self._notify("vector_search", f"Expanded to {len(expanded_queries)} queries")
+            # Generate embedding for the query (async)
+            query_embedding = await self.ai.generate_embedding_async(query)
             
-            # Generate embeddings and search for all query variations
-            all_results = []
-            for q in expanded_queries:
-                query_embedding = await self.ai.generate_embedding_async(q)
-                if query_embedding:
-                    # Use keyword query for hybrid search
-                    results = self.db.search_vectors(
-                        query_embedding,
-                        match_threshold=0.3,
-                        project_id=self.project_id,
-                        match_count=10,
-                        keyword_query=q  # Hybrid: vector + keyword
-                    )
-                    if results:
-                        all_results.append((q, results))
-            
-            if not all_results:
+            if not query_embedding:
                 self._notify("vector_search", "complete")
                 return "Error: Could not generate embedding for query."
             
-            # Merge results using Reciprocal Rank Fusion
-            # Use the AI engine's merge function
-            result_lists = [r[1] for r in all_results]
-            results = self.ai._merge_search_results(result_lists)
+            # Search vectors with hybrid search (vector + keyword)
+            results = self.db.search_vectors(
+                query_embedding,
+                match_threshold=0.3,
+                project_id=self.project_id,
+                match_count=10 if self.do_rerank else 5,  # Get more if re-ranking
+                keyword_query=query  # REQ-ENH-01: Hybrid search
+            )
             
             if not results:
                 self._notify("vector_search", "complete")

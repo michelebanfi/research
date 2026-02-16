@@ -4,6 +4,7 @@ import { chatSocket } from '../services/api'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import { Logo } from './Logo'
 import { 
   Send, 
   Settings, 
@@ -22,7 +23,7 @@ import {
   FileText,
   Globe,
   Network,
-  XCircle
+  Plus
 } from 'lucide-react'
 
 export default function ChatTab() {
@@ -51,6 +52,7 @@ export default function ChatTab() {
     matchedConcepts,
     setRetrievedChunks,
     setMatchedConcepts,
+    createNewChat,
   } = useAppStore()
 
   // Auto-scroll to bottom
@@ -119,6 +121,12 @@ export default function ChatTab() {
       return
     }
 
+    // Create a new chat if none exists
+    const { currentChatId, createNewChat } = useAppStore.getState()
+    if (!currentChatId) {
+      createNewChat()
+    }
+
     // Add user message
     addMessage({ role: 'user', content: input })
     
@@ -151,7 +159,7 @@ export default function ChatTab() {
     <div className="flex h-full">
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Chat Header with Settings */}
+        {/* Chat Header with Settings and New Chat Button */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-border">
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold">Chat</h2>
@@ -160,16 +168,25 @@ export default function ChatTab() {
               {isConnected ? 'Connected' : 'Disconnected'}
             </div>
           </div>
-          <button
-            onClick={() => setShowSettings(!showSettings)}
-            className={`p-2 rounded-lg transition-colors ${
-              showSettings 
-                ? 'bg-slate-200 text-secondary dark:bg-secondary/20 dark:text-secondary' 
-                : 'hover:bg-slate-100 dark:hover:bg-muted/20'
-            }`}
-          >
-            <Settings size={20} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={createNewChat}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-secondary text-white rounded-lg hover:bg-secondary-hover transition-colors"
+            >
+              <Plus size={16} />
+              New Chat
+            </button>
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className={`p-2 rounded-lg transition-colors ${
+                showSettings 
+                  ? 'bg-slate-200 text-secondary dark:bg-secondary/20 dark:text-secondary' 
+                  : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+              }`}
+            >
+              <Settings size={20} />
+            </button>
+          </div>
         </div>
 
         {/* Settings Panel */}
@@ -215,6 +232,13 @@ export default function ChatTab() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Show Logo when no chat history */}
+          {chatHistory.length === 0 && !isChatting && (
+            <div className="flex-1 flex items-center justify-center h-full">
+              <Logo />
+            </div>
+          )}
+          
           {chatHistory.map((msg, idx) => (
             <div
               key={idx}
@@ -408,7 +432,6 @@ function MarkdownMessage({ content }: { content: string }) {
         components={{
           // Style code blocks
           code({ node, inline, className, children, ...props }: any) {
-            const match = /language-(\w+)/.exec(className || '')
             return !inline ? (
               <pre className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg overflow-x-auto my-2">
                 <code className={className} {...props}>

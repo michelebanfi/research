@@ -14,10 +14,9 @@ function App() {
   const { 
     selectedProject, 
     setProjects, 
-    setFiles,
-    chatHistory,
     clearChat,
-    clearAgentEvents 
+    clearAgentEvents,
+    setCurrentChatId 
   } = useAppStore()
 
   // Load projects on mount
@@ -43,13 +42,15 @@ function App() {
           // Clear chat history when project changes
           clearChat()
           clearAgentEvents()
+          // Reset current chat ID
+          setCurrentChatId(null)
         } catch (error) {
           console.error('Failed to load files:', error)
         }
       }
     }
     loadFiles()
-  }, [selectedProject, clearChat, clearAgentEvents])
+  }, [selectedProject, clearChat, clearAgentEvents, setCurrentChatId])
 
   return (
     <div className="flex h-screen bg-background text-text">
