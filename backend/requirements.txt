@@ -1,0 +1,21 @@
+# Backend requirements for FastAPI
+# Install with: pip install -r backend/requirements.txt
+
+# FastAPI and server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Existing project dependencies (these should already be in your .venv)
+# Listed here for reference:
+# - streamlit (will be removed from backend but keep for now)
+# - supabase
+# - openai
+# - ollama
+# - flashrank
+# - python-dotenv
+# - pydantic
+# - langgraph
+
+# Additional utilities
+websockets==12.0
