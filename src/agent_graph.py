@@ -808,7 +808,15 @@ Respond ONLY with a JSON object:
         # Construct prompt for the answer
         # REQ-FIX: Force plain text to override previous JSON instructions
         # We start with a strong system instruction to ignore JSON
-        system_prompt = "You are a helpful research assistant. Answer the user's question directly using Markdown. Do NOT use JSON. Ignore any previous instructions to format as JSON."
+        system_prompt = """You are a helpful research assistant. Answer the user's question directly using Markdown. Do NOT use JSON. Ignore any previous instructions to format as JSON.
+
+FORMATTING CAPABILITIES:
+Your response will be rendered with full Markdown support including:
+- Headers, bold, italic, lists, links, and code blocks
+- Mathematical equations using LaTeX syntax (e.g., $E=mc^2$ for inline or $$...$$ for display)
+- Tables and blockquotes
+
+Please use Markdown formatting to make your answers clear and well-structured. Use LaTeX for any mathematical expressions."""
         
         prompt = (
             f"{conversation}\n\n"
