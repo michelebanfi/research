@@ -127,13 +127,31 @@ class ToolRegistry:
                 return "Error: Could not generate embedding for query."
             
             # Search vectors with hybrid search (vector + keyword)
+            # REQ-FIX-A: Add filter to exclude reference/bibliography sections
             results = self.db.search_vectors(
                 query_embedding,
                 match_threshold=0.3,
                 project_id=self.project_id,
                 match_count=10 if self.do_rerank else 5,  # Get more if re-ranking
-                keyword_query=query  # REQ-ENH-01: Hybrid search
+                keyword_query=query,  # REQ-ENH-01: Hybrid search
+                include_references=False  # REQ-FIX-A: Exclude reference sections
             )
+
+            # REQ-FIX-B: Parent Context Retrieval
+            # Check for parent_chunk_id and fetch parent content instead of leaf
+            if results:
+                for chunk in results:
+                    parent_id = chunk.get('parent_chunk_id')
+                    if parent_id:
+                        # Fetch the parent chunk content
+                        parent_content = self.db.get_chunk_by_id(parent_id)
+                        if parent_content and parent_content.get('content'):
+                            chunk['content'] = parent_content['content']
+                            chunk['retrieved_via'] = 'parent'
+                        else:
+                            chunk['retrieved_via'] = 'leaf'
+                    else:
+                        chunk['retrieved_via'] = 'leaf'
             
             if not results:
                 self._notify("vector_search", "complete")

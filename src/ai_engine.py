@@ -868,34 +868,57 @@ If no merges needed, return: {{}}"""
     async def compress_context(self, chunks: List[Dict[str, Any]], query: str) -> str:
         """
         REQ-IMP-11: Context Distillation.
-        Summarizes retrieved chunks to fit into context window while retaining relevance to the query.
+        REQ-FIX-D: Selective Context Compression.
+        
+        - Keep top 3 chunks intact (lossless)
+        - Summarize chunks 4-10 (lossy)
+        - Drop chunks 11+ if still over limit
         """
         if not chunks:
             return ""
-            
-        # If total tokens low enough, just return concatenation
+        
         total_len = sum(len(c.get("content", "")) for c in chunks)
+        
         if total_len < 3000:
             return "\n\n".join([f"Document {i+1}:\n{c.get('content')}" for i, c in enumerate(chunks)])
-            
-        # Otherwise, compress each chunk
-        tasks = []
-        for c in chunks:
-            prompt = f"""Summarize the following text, keeping ONLY information relevant to the User Query.
+        
+        top_3 = chunks[:3]
+        chunks_4_10 = chunks[3:10]
+        remaining = chunks[10:]
+        
+        compressed = []
+        
+        for i, c in enumerate(top_3):
+            compressed.append(f"Document {i+1}:\n{c.get('content')}")
+        
+        if chunks_4_10:
+            tasks = []
+            for c in chunks_4_10:
+                prompt = f"""Summarize the following text, keeping ONLY information relevant to the User Query.
 User Query: "{query}"
 
 Text:
 {c.get('content')[:2000]}...
 
 Summary:"""
-            tasks.append(self._openrouter_generate(prompt))
+                tasks.append(self._openrouter_generate(prompt))
             
-        summaries = await asyncio.gather(*tasks)
+            summaries = await asyncio.gather(*tasks)
+            
+            for i, s in enumerate(summaries):
+                doc_num = i + 4
+                compressed.append(f"Document {doc_num} (Summary):\n{s}")
         
-        compressed = []
-        for i, s in enumerate(summaries):
-             compressed.append(f"Document {i+1} (Summary):\n{s}")
-              
+        if remaining:
+            remaining_len = sum(len(c.get("content", "")) for c in remaining)
+            current_len = sum(len(x) for x in compressed)
+            if current_len + remaining_len > 3000:
+                pass
+            else:
+                for i, c in enumerate(remaining):
+                    doc_num = i + 11
+                    compressed.append(f"Document {doc_num} (Summary):\n{c.get('content')[:500]}...")
+        
         return "\n\n".join(compressed)
 
     async def evaluate_retrieval_quality(

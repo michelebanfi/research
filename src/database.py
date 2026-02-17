@@ -404,6 +404,77 @@ class DatabaseClient:
             print(f"Error getting file summaries: {e}")
             return ""
 
+    def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
+        """
+        REQ-FIX-B: Retrieves a specific chunk by its ID.
+        Used for parent context retrieval when a leaf chunk references a parent.
+        """
+        try:
+            response = self.client.table("file_chunks").select("*").eq("id", chunk_id).execute()
+            if response.data:
+                return response.data[0]
+            return None
+        except Exception as e:
+            print(f"Error getting chunk by ID: {e}")
+            return None
+
+    def get_file_chunks(self, file_id: str) -> List[Dict[str, Any]]:
+        """Retrieves all chunks for a specific file."""
+        try:
+            response = self.client.table("file_chunks").select("*").eq("file_id", file_id).order("chunk_index").execute()
+            return response.data or []
+        except Exception as e:
+            print(f"Error getting file chunks: {e}")
+            return []
+
+    def get_file_sections(self, file_id: str) -> List[Dict[str, Any]]:
+        """Retrieves all sections for a specific file."""
+        try:
+            response = self.client.table("sections").select("*").eq("file_id", file_id).order("level").execute()
+            return response.data or []
+        except Exception as e:
+            print(f"Error getting file sections: {e}")
+            return []
+
+    def get_file_keywords(self, file_id: str) -> List[str]:
+        """Retrieves all keywords for a specific file."""
+        try:
+            response = self.client.table("file_keywords").select("keywords(keyword)").eq("file_id", file_id).execute()
+            return [item['keywords']['keyword'] for item in response.data] if response.data else []
+        except Exception as e:
+            print(f"Error getting file keywords: {e}")
+            return []
+
+    def get_file_entities(self, file_id: str) -> List[Dict[str, str]]:
+        """Retrieves all entities with their types for a specific file from graph data."""
+        try:
+            # Get graph edges which contain source and target node info with types
+            response = self.client.rpc("get_file_graph", {"p_file_id": file_id}).execute()
+            
+            if not response.data:
+                return []
+            
+            # Extract unique entities with their types
+            entities = {}
+            for edge in response.data:
+                # Source node
+                source_name = edge.get('source_name')
+                source_type = edge.get('source_type', 'Concept')
+                if source_name and source_name not in entities:
+                    entities[source_name] = source_type
+                
+                # Target node
+                target_name = edge.get('target_name')
+                target_type = edge.get('target_type', 'Concept')
+                if target_name and target_name not in entities:
+                    entities[target_name] = target_type
+            
+            # Convert to list format
+            return [{"name": name, "type": type_} for name, type_ in entities.items()]
+        except Exception as e:
+            print(f"Error getting file entities: {e}")
+            return []
+
     # ==================== REQ-DATA-02: Semantic Auto-Clustering ====================
     
     def run_semantic_clustering(self, project_id: str, min_cluster_size: int = 3) -> Dict[str, Any]:

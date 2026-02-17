@@ -13,6 +13,125 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { Loader2, RefreshCw, Share2, X } from 'lucide-react'
 
+// Force-directed layout algorithm for organic graph visualization
+interface LayoutNode {
+  id: string
+  x: number
+  y: number
+  vx: number
+  vy: number
+}
+
+function calculateForceDirectedLayout(
+  nodes: Array<{ id: string }>,
+  edges: Array<{ source: string; target: string }>,
+  width: number = 1200,
+  height: number = 800
+): Map<string, { x: number; y: number }> {
+  const nodeMap = new Map<string, LayoutNode>()
+  const positions = new Map<string, { x: number; y: number }>()
+  
+  // Initialize nodes with random positions near center
+  // Use larger initial radius for better distribution
+  nodes.forEach((node, i) => {
+    const angle = (i / nodes.length) * 2 * Math.PI
+    const radius = Math.min(width, height) * 0.35  // Increased from 0.2
+    nodeMap.set(node.id, {
+      id: node.id,
+      x: width / 2 + Math.cos(angle) * radius,
+      y: height / 2 + Math.sin(angle) * radius,
+      vx: 0,
+      vy: 0
+    })
+  })
+  
+  // Force-directed simulation parameters
+  const REPULSION_FORCE = 20000  // Increased from 5000 for more spacing
+  const ATTRACTION_FORCE = 0.02  // Decreased from 0.05 for looser clusters
+  const DAMPING = 0.85
+  const MAX_DISPLACEMENT = 80  // Increased from 50
+  const ITERATIONS = 150  // More iterations for better convergence
+  const IDEAL_EDGE_LENGTH = 200  // Target distance between connected nodes
+  
+  // Run simulation
+  for (let iter = 0; iter < ITERATIONS; iter++) {
+    // Calculate repulsive forces (nodes push away from each other)
+    nodeMap.forEach((node1) => {
+      nodeMap.forEach((node2) => {
+        if (node1.id === node2.id) return
+        
+        const dx = node1.x - node2.x
+        const dy = node1.y - node2.y
+        const distance = Math.sqrt(dx * dx + dy * dy) || 1
+        
+        const force = REPULSION_FORCE / (distance * distance)
+        const fx = (dx / distance) * force
+        const fy = (dy / distance) * force
+        
+        node1.vx += fx
+        node1.vy += fy
+      })
+    })
+    
+    // Calculate attractive forces (edges pull nodes together)
+    edges.forEach((edge) => {
+      const source = nodeMap.get(edge.source)
+      const target = nodeMap.get(edge.target)
+      if (!source || !target) return
+      
+      const dx = target.x - source.x
+      const dy = target.y - source.y
+      const distance = Math.sqrt(dx * dx + dy * dy) || 1
+      
+      // Spring force: pulls toward ideal length
+      const displacement = distance - IDEAL_EDGE_LENGTH
+      const force = displacement * ATTRACTION_FORCE
+      const fx = (dx / distance) * force
+      const fy = (dy / distance) * force
+      
+      source.vx += fx
+      source.vy += fy
+      target.vx -= fx
+      target.vy -= fy
+    })
+    
+    // Apply forces with damping and center gravity
+    const CENTER_GRAVITY = 0.01
+    nodeMap.forEach((node) => {
+      // Center gravity (pull toward center)
+      node.vx += (width / 2 - node.x) * CENTER_GRAVITY
+      node.vy += (height / 2 - node.y) * CENTER_GRAVITY
+      
+      // Apply damping
+      node.vx *= DAMPING
+      node.vy *= DAMPING
+      
+      // Limit maximum displacement
+      const velocity = Math.sqrt(node.vx * node.vx + node.vy * node.vy)
+      if (velocity > MAX_DISPLACEMENT) {
+        node.vx = (node.vx / velocity) * MAX_DISPLACEMENT
+        node.vy = (node.vy / velocity) * MAX_DISPLACEMENT
+      }
+      
+      // Update position
+      node.x += node.vx
+      node.y += node.vy
+      
+      // Keep within bounds with padding
+      const padding = 150  // Increased from 100 for better margins
+      node.x = Math.max(padding, Math.min(width - padding, node.x))
+      node.y = Math.max(padding, Math.min(height - padding, node.y))
+    })
+  }
+  
+  // Extract final positions
+  nodeMap.forEach((node) => {
+    positions.set(node.id, { x: node.x, y: node.y })
+  })
+  
+  return positions
+}
+
 export default function GraphTab() {
   const [isLoading, setIsLoading] = useState(false)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
@@ -28,24 +147,33 @@ export default function GraphTab() {
     try {
       const data = await api.getProjectGraph(selectedProject.id)
       
-      // Transform to ReactFlow format
-      const flowNodes: Node[] = data.nodes.map((n: any, idx: number) => ({
-        id: n.id,
-        data: { label: n.label, type: n.type },
-        position: { 
-          x: 100 + (idx % 10) * 150, 
-          y: 100 + Math.floor(idx / 10) * 100 
-        },
-        style: {
-          background: n.color,
-          color: 'white',
-          border: 'none',
-          padding: '10px',
-          borderRadius: '8px',
-          fontSize: '12px',
-          fontWeight: 'bold',
-        },
-      }))
+      // Calculate force-directed layout for organic graph visualization
+      // Using larger canvas for better spacing
+      const layoutPositions = calculateForceDirectedLayout(
+        data.nodes,
+        data.edges,
+        1600,
+        1200
+      )
+      
+      // Transform to ReactFlow format with calculated positions
+      const flowNodes: Node[] = data.nodes.map((n: any) => {
+        const position = layoutPositions.get(n.id) || { x: 600, y: 400 }
+        return {
+          id: n.id,
+          data: { label: n.label, type: n.type },
+          position,
+          style: {
+            background: n.color,
+            color: 'white',
+            border: 'none',
+            padding: '10px',
+            borderRadius: '8px',
+            fontSize: '12px',
+            fontWeight: 'bold',
+          },
+        }
+      })
       
       const flowEdges: Edge[] = data.edges.map((e: any, idx: number) => ({
         id: `e${idx}`,

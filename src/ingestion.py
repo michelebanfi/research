@@ -1,6 +1,7 @@
 import os
 import uuid
 import ast
+import asyncio
 from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any
@@ -27,6 +28,7 @@ class DoclingParser:
     Parses documents using Docling with enhanced metadata extraction.
     Implements REQ-02 (granular metadata), REQ-04 (bibliography filtering), REQ-07 (table handling).
     REQ-NLP-01: Also detects Abstract/Conclusion sections for key claim extraction.
+    REQ-FIX-C: Semantic Table Embedding - stores both content and embedding_content for tables.
     """
     
     # REQ-04: Patterns to identify reference/bibliography sections
@@ -42,9 +44,10 @@ class DoclingParser:
         "results": ["results", "contributions", "main findings"]
     }
     
-    def __init__(self):
+    def __init__(self, ai_engine=None):
         self.converter = DocumentConverter()
         self.chunker = HierarchicalChunker()
+        self.ai_engine = ai_engine
     
     def _detect_key_claim_section(self, metadata: Dict[str, Any]) -> str:
         """
@@ -139,6 +142,60 @@ class DoclingParser:
         metadata["chunk_index"] = chunk_index
         return metadata
 
+    async def _generate_table_summary_async(self, table_content: str) -> str:
+        """
+        REQ-FIX-C: Generate a 1-sentence summary of what the table shows.
+        Used for semantic embedding of table content.
+        """
+        if not self.ai_engine:
+            return table_content[:500]
+        
+        try:
+            prompt = f"""Generate a very brief (1 sentence, max 100 characters) description of what this table shows.
+Focus on the main data points or comparison being made.
+
+Table:
+{table_content[:1500]}
+
+Description:"""
+            
+            summary = await self.ai_engine._openrouter_generate(prompt)
+            return summary.strip() if summary else table_content[:500]
+        except Exception as e:
+            print(f"Error generating table summary: {e}")
+            return table_content[:500]
+
+    async def process_table_summaries_async(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        REQ-FIX-C: Process tables to generate semantic summaries for embedding.
+        This should be called after parsing to populate embedding_content for table chunks.
+        """
+        if not self.ai_engine:
+            return chunks
+        
+        table_chunks = [c for c in chunks if c.get('is_table', False)]
+        if not table_chunks:
+            return chunks
+        
+        tasks = []
+        chunk_map = {}
+        
+        for chunk in table_chunks:
+            task = self._generate_table_summary_async(chunk.get('content', ''))
+            tasks.append(task)
+            chunk_map[id(task)] = chunk
+        
+        if not tasks:
+            return chunks
+        
+        summaries = await asyncio.gather(*tasks)
+        
+        for chunk, summary in zip(table_chunks, summaries):
+            chunk['embedding_content'] = summary
+            chunk['embedding_text'] = summary
+        
+        return chunks
+
     def parse(self, file_path: str) -> List[Dict[str, Any]]:
         """
         Parses a document using Docling and HierarchicalChunker.
@@ -229,6 +286,8 @@ class DoclingParser:
                 if is_table:
                     chunk_data["metadata"]["is_table"] = True
                     chunk_data["metadata"]["table_raw_content"] = chunk.text
+                    chunk_data["content"] = chunk.text
+                    chunk_data["embedding_content"] = f"[TABLE] {chunk.text[:500]}"
                     chunk_data["embedding_text"] = f"[TABLE] {chunk.text[:500]}"
                 
                 leaf_chunks.append(chunk_data)

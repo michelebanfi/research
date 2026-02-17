@@ -25,6 +25,16 @@ export const api = {
     await axios.delete(`${API_BASE}/files/${fileId}`)
   },
 
+  async getFileDetails(fileId: string): Promise<any> {
+    const response = await axios.get(`${API_BASE}/files/${fileId}/details`)
+    return response.data
+  },
+
+  async getUploadProgress(tempFileId: string): Promise<any> {
+    const response = await axios.get(`${API_BASE}/upload/progress/${tempFileId}`)
+    return response.data
+  },
+
   async uploadFile(file: File, projectId: string): Promise<any> {
     const formData = new FormData()
     formData.append('file', file)

@@ -1,11 +1,34 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { api } from '../services/api'
-import { Upload, File, Trash2, Loader2, FolderOpen } from 'lucide-react'
+import { Upload, File, Loader2, FolderOpen, CheckCircle2 } from 'lucide-react'
+import EnhancedFileCard from './EnhancedFileCard'
+
+interface IngestionProgress {
+  file_id: string
+  stage: string
+  progress: number
+  message: string
+  chunks_count: number
+  nodes_count: number
+  edges_count: number
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  'saving': 'Saving file...',
+  'parsing': 'Parsing document...',
+  'summarizing': 'Generating summary...',
+  'extracting_graph': 'Extracting entities...',
+  'embedding': 'Creating embeddings...',
+  'storing': 'Storing data...',
+  'complete': 'Complete!'
+}
 
 export default function IngestTab() {
   const [isUploading, setIsUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState('')
+  const [uploadProgress, setUploadProgress] = useState<IngestionProgress | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   
   const { 
@@ -14,29 +37,96 @@ export default function IngestTab() {
     setFiles 
   } = useAppStore()
 
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+      }
+    }
+  }, [])
+
+  const pollProgress = useCallback(async (tempId: string) => {
+    try {
+      const progress = await api.getUploadProgress(tempId)
+      setUploadProgress(progress)
+      
+      // Stop polling if complete or error
+      if (progress.stage === 'complete' || progress.progress >= 100) {
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current)
+          pollingRef.current = null
+        }
+      }
+    } catch (error) {
+      console.error('Error polling progress:', error)
+    }
+  }, [])
+
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || !selectedProject) return
 
     setIsUploading(true)
-    setUploadProgress('Uploading file...')
-
+    setUploadError(null)
+    setUploadProgress(null)
+    
     try {
       const result = await api.uploadFile(file, selectedProject.id)
       
-      if (result.success) {
-        setUploadProgress(`Success! Processed ${result.chunks_count} chunks, ${result.nodes_count} nodes, ${result.edges_count} edges`)
-        // Refresh file list
+      if (result.success && result.temp_file_id) {
+        // Start polling for progress
+        pollingRef.current = setInterval(() => {
+          pollProgress(result.temp_file_id)
+        }, 500) // Poll every 500ms
+        
+        // Initial poll
+        pollProgress(result.temp_file_id)
+        
+        // Stop polling after 60 seconds (timeout) and refresh files
+        setTimeout(() => {
+          if (pollingRef.current) {
+            clearInterval(pollingRef.current)
+            pollingRef.current = null
+          }
+          // Refresh file list
+          api.getProjectFiles(selectedProject.id).then(setFiles)
+          setIsUploading(false)
+          setUploadProgress(null)
+        }, 60000)
+        
+      } else if (result.success) {
+        // No progress tracking available, just refresh
+        setUploadProgress({
+          file_id: '',
+          stage: 'complete',
+          progress: 100,
+          message: result.message,
+          chunks_count: result.chunks_count,
+          nodes_count: result.nodes_count,
+          edges_count: result.edges_count
+        })
+        
         const updatedFiles = await api.getProjectFiles(selectedProject.id)
         setFiles(updatedFiles)
+        setIsUploading(false)
+        
+        setTimeout(() => {
+          setUploadProgress(null)
+        }, 3000)
       } else {
-        setUploadProgress(`Error: ${result.message}`)
+        setUploadError(result.message)
+        setIsUploading(false)
       }
     } catch (error) {
       console.error('Upload error:', error)
-      setUploadProgress('Error uploading file')
-    } finally {
+      setUploadError('Error uploading file')
       setIsUploading(false)
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+        pollingRef.current = null
+      }
+    } finally {
       // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
@@ -74,7 +164,7 @@ export default function IngestTab() {
           </span>
         </div>
 
-        <div className="flex-1 overflow-y-auto space-y-2">
+        <div className="flex-1 overflow-y-auto space-y-3">
           {files.length === 0 ? (
             <div className="text-center py-12">
               <File size={48} className="mx-auto text-muted mb-4" />
@@ -85,7 +175,7 @@ export default function IngestTab() {
             </div>
           ) : (
             files.map((file) => (
-              <FileCard 
+              <EnhancedFileCard 
                 key={file.id} 
                 file={file} 
                 onDelete={() => handleDelete(file.id)}
@@ -121,7 +211,6 @@ export default function IngestTab() {
                 <>
                   <Loader2 size={48} className="text-secondary animate-spin mb-4" />
                   <p className="text-secondary font-medium">Processing...</p>
-                  <p className="text-sm text-muted mt-2">{uploadProgress}</p>
                 </>
               ) : (
                 <>
@@ -137,13 +226,63 @@ export default function IngestTab() {
             </label>
           </div>
 
-          {!isUploading && uploadProgress && (
-            <div className={`mt-4 p-3 rounded-lg text-sm ${
-              uploadProgress.includes('Error') 
-                ? 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400' 
-                : 'bg-emerald-100 text-emerald-700 dark:bg-green-500/10 dark:text-green-400'
-            }`}>
-              {uploadProgress}
+          {/* Progress Bar */}
+          {isUploading && uploadProgress && (
+            <div className="mt-4 space-y-3">
+              {/* Stage message */}
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-secondary font-medium">
+                  {STAGE_LABELS[uploadProgress.stage] || uploadProgress.message}
+                </span>
+                <span className="text-muted">
+                  {Math.round(uploadProgress.progress)}%
+                </span>
+              </div>
+              
+              {/* Progress bar */}
+              <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-secondary transition-all duration-300 ease-out"
+                  style={{ width: `${uploadProgress.progress}%` }}
+                />
+              </div>
+              
+              {/* Stats */}
+              {uploadProgress.chunks_count > 0 && (
+                <div className="flex items-center gap-3 text-xs text-muted">
+                  <span>{uploadProgress.chunks_count} chunks</span>
+                  {uploadProgress.nodes_count > 0 && (
+                    <>
+                      <span>•</span>
+                      <span>{uploadProgress.nodes_count} entities</span>
+                    </>
+                  )}
+                  {uploadProgress.edges_count > 0 && (
+                    <>
+                      <span>•</span>
+                      <span>{uploadProgress.edges_count} relations</span>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Success message */}
+          {!isUploading && uploadProgress?.stage === 'complete' && (
+            <div className="mt-4 p-3 rounded-lg text-sm bg-emerald-100 text-emerald-700 dark:bg-green-500/10 dark:text-green-400 flex items-center gap-2">
+              <CheckCircle2 size={18} />
+              <span>
+                Success! Processed {uploadProgress.chunks_count} chunks,{' '}
+                {uploadProgress.nodes_count} nodes, {uploadProgress.edges_count} edges
+              </span>
+            </div>
+          )}
+
+          {/* Error message */}
+          {!isUploading && uploadError && (
+            <div className="mt-4 p-3 rounded-lg text-sm bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400">
+              {uploadError}
             </div>
           )}
 
@@ -159,73 +298,6 @@ export default function IngestTab() {
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-function FileCard({ file, onDelete }: { file: any; onDelete: () => void }) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div className="bg-surface rounded-lg border border-border overflow-hidden shadow-sm">
-      <div className="p-4 flex items-start justify-between">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <File size={18} className="text-secondary" />
-            <h4 className="font-medium truncate">{file.name}</h4>
-          </div>
-          <p className="text-xs text-muted mt-1">
-            Processed: {new Date(file.processed_at).toLocaleString()}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setExpanded(!expanded)}
-            className="px-3 py-1 text-sm bg-slate-100 dark:bg-muted/20 rounded hover:bg-slate-200 dark:hover:bg-muted/30 transition-colors border border-border"
-          >
-            {expanded ? 'Hide' : 'Details'}
-          </button>
-          <button
-            onClick={onDelete}
-            className="p-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded transition-colors"
-            title="Delete file"
-          >
-            <Trash2 size={18} />
-          </button>
-        </div>
-      </div>
-
-      {expanded && (
-        <div className="px-4 pb-4 border-t border-border pt-3 bg-slate-50/50 dark:bg-transparent">
-          <div className="space-y-3">
-            <div>
-              <p className="text-xs text-muted mb-1">Summary:</p>
-              <p className="text-sm">{file.summary || 'No summary available'}</p>
-            </div>
-            
-            {file.metadata?.keywords && file.metadata.keywords.length > 0 && (
-              <div>
-                <p className="text-xs text-muted mb-1">Keywords:</p>
-                <div className="flex flex-wrap gap-1">
-                  {file.metadata.keywords.slice(0, 10).map((keyword: string, idx: number) => (
-                    <span
-                      key={idx}
-                      className="px-2 py-0.5 bg-slate-200 text-slate-700 dark:bg-secondary/20 dark:text-secondary text-xs rounded font-medium"
-                    >
-                      {keyword}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            <div className="text-xs text-muted">
-              <p>ID: {file.id}</p>
-              <p className="truncate">Path: {file.path}</p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

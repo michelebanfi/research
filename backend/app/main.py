@@ -46,7 +46,17 @@ class AppState:
         self.db: Optional[DatabaseClient] = None
         self.ranker: Optional[Ranker] = None
         self.ai_engine: Optional[AIEngine] = None
+        self.ingestion_progress: Dict[str, Dict] = {}  # file_id -> progress info
         logger.info("AppState initialized")
+
+class IngestionProgress(BaseModel):
+    file_id: str
+    stage: str
+    progress: float  # 0-100
+    message: str
+    chunks_count: int = 0
+    nodes_count: int = 0
+    edges_count: int = 0
 
 app_state = AppState()
 
@@ -141,6 +151,7 @@ class ChatResponse(BaseModel):
 class FileUploadResponse(BaseModel):
     success: bool
     file_id: Optional[str] = None
+    temp_file_id: Optional[str] = None  # For progress tracking
     message: str
     chunks_count: int = 0
     nodes_count: int = 0
@@ -206,6 +217,57 @@ async def delete_file(file_id: str):
             raise HTTPException(status_code=500, detail="Failed to delete file")
     except Exception as e:
         logger.error(f"Error deleting file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/upload/progress/{temp_file_id}")
+async def get_upload_progress(temp_file_id: str):
+    """Get the current progress of a file upload"""
+    progress = app_state.ingestion_progress.get(temp_file_id)
+    if not progress:
+        raise HTTPException(status_code=404, detail="Progress not found")
+    return progress
+
+@app.get("/api/files/{file_id}/details")
+async def get_file_details(file_id: str):
+    """Get detailed information about a file including chunks and structure"""
+    logger.info(f"Fetching file details: {file_id}")
+    try:
+        # Get file metadata
+        file_response = app_state.db.client.table("files").select("*").eq("id", file_id).execute()
+        if not file_response.data:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        file_data = file_response.data[0]
+        
+        # Get chunks with full metadata
+        chunks = app_state.db.get_file_chunks(file_id)
+        
+        # Get sections
+        sections = app_state.db.get_file_sections(file_id)
+        
+        # Get keywords (for backward compatibility) and typed entities
+        keywords = app_state.db.get_file_keywords(file_id)
+        entities = app_state.db.get_file_entities(file_id)
+        
+        # Calculate statistics
+        stats = {
+            "total_chunks": len(chunks),
+            "table_chunks": len([c for c in chunks if c.get("is_table")]),
+            "reference_chunks": len([c for c in chunks if c.get("is_reference")]),
+            "parent_chunks": len([c for c in chunks if c.get("chunk_level", 0) == 0]),
+            "leaf_chunks": len([c for c in chunks if c.get("chunk_level", 0) > 0]),
+        }
+        
+        return {
+            "file": file_data,
+            "chunks": chunks,
+            "sections": sections,
+            "keywords": keywords,
+            "entities": entities,
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Error fetching file details: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/projects/{project_id}/graph")
@@ -420,16 +482,33 @@ async def websocket_chat(websocket: WebSocket):
 # File Upload Endpoint
 # ============================================================================
 
+def update_progress(file_id: str, stage: str, progress: float, message: str, chunks: int = 0, nodes: int = 0, edges: int = 0):
+    """Update ingestion progress in global state"""
+    app_state.ingestion_progress[file_id] = {
+        "file_id": file_id,
+        "stage": stage,
+        "progress": progress,
+        "message": message,
+        "chunks_count": chunks,
+        "nodes_count": nodes,
+        "edges_count": edges,
+        "timestamp": datetime.now().isoformat()
+    }
+
 @app.post("/api/upload")
 async def upload_file(
     file: UploadFile = File(...),
     project_id: str = Form(...)
 ):
-    """Upload and process a file"""
+    """Upload and process a file with progress tracking"""
     logger.info(f"Upload request: {file.filename} for project {project_id}")
     
+    # Generate temporary file_id for progress tracking
+    temp_file_id = f"temp_{datetime.now().timestamp()}"
+    
     try:
-        # Save file
+        # Stage 1: Saving file (0-10%)
+        update_progress(temp_file_id, "saving", 5, "Saving uploaded file...")
         upload_dir = Path("static/uploads")
         upload_dir.mkdir(parents=True, exist_ok=True)
         file_path = upload_dir / file.filename
@@ -440,7 +519,8 @@ async def upload_file(
         
         logger.info(f"File saved: {file_path}")
         
-        # Process file (async)
+        # Stage 2: Parsing (10-30%)
+        update_progress(temp_file_id, "parsing", 15, "Parsing document structure...")
         from src.ingestion import FileRouter, DoclingParser, ASTParser, FileType
         
         # Detect file type
@@ -465,6 +545,7 @@ async def upload_file(
                 message="Unsupported file type"
             )
         
+        update_progress(temp_file_id, "parsing", 30, f"Parsed {len(chunks)} chunks", chunks=len(chunks))
         logger.info(f"Parsed {len(chunks)} chunks")
         
         # AI Processing
@@ -474,16 +555,25 @@ async def upload_file(
             import ollama
             async_client = ollama.AsyncClient()
             
-            # Generate summary
+            # Stage 3: Generating summary (30-50%)
+            update_progress(temp_file_id, "summarizing", 40, "Generating document summary...", chunks=len(chunks))
             summary = await app_state.ai_engine.generate_summary_async(full_text[:4000])
             
-            # Extract graph
+            # Stage 4: Extracting knowledge graph (50-70%)
+            update_progress(temp_file_id, "extracting_graph", 60, "Extracting entities and relationships...", chunks=len(chunks))
             graph_data = await app_state.ai_engine.extract_metadata_graph_async(full_text)
             
-            # Generate embeddings
+            # Stage 5: Generating embeddings (70-90%)
+            update_progress(temp_file_id, "embedding", 75, "Generating embeddings for chunks...", chunks=len(chunks))
             embeddings = []
-            for i in range(0, len(chunks), 10):  # Batch size 10
-                batch = chunks[i:i+10]
+            total_batches = (len(chunks) + 9) // 10
+            for batch_idx in range(0, len(chunks), 10):  # Batch size 10
+                batch_num = batch_idx // 10 + 1
+                batch_progress = 75 + (batch_num / total_batches) * 15
+                update_progress(temp_file_id, "embedding", batch_progress, 
+                              f"Generating embeddings (batch {batch_num}/{total_batches})...", chunks=len(chunks))
+                
+                batch = chunks[batch_idx:batch_idx+10]
                 batch_tasks = []
                 for chunk in batch:
                     text = chunk.get('embedding_text', chunk['content'])
@@ -529,6 +619,10 @@ async def upload_file(
             edges.extend(code_graph_data["edges"])
         
         keywords = [n['name'] for n in nodes]
+        
+        # Stage 6: Storing in database (90-100%)
+        update_progress(temp_file_id, "storing", 95, "Storing data in database...", 
+                       chunks=len(chunks), nodes=len(nodes), edges=len(edges))
         
         # Store in database
         file_meta = app_state.db.upload_file_metadata(
@@ -582,11 +676,16 @@ async def upload_file(
             app_state.db.store_keywords(file_id, keywords)
             app_state.db.store_graph_data(file_id, nodes, edges)
             
+            # Final progress update
+            update_progress(temp_file_id, "complete", 100, "Ingestion complete!", 
+                           chunks=len(chunks), nodes=len(nodes), edges=len(edges))
+            
             logger.info(f"Ingestion complete: {file_id}")
             
             return FileUploadResponse(
                 success=True,
                 file_id=file_id,
+                temp_file_id=temp_file_id,
                 message="File ingested successfully",
                 chunks_count=len(chunks),
                 nodes_count=len(nodes),
