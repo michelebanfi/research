@@ -5,8 +5,12 @@ import asyncio
 from enum import Enum
 from pathlib import Path
 from typing import List, Dict, Any
-from docling.document_converter import DocumentConverter
+from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.chunking import HierarchicalChunker
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import VlmPipelineOptions
+from docling.datamodel.vlm_model_specs import GRANITEDOCLING_OLLAMA
+from docling.pipeline.vlm_pipeline import VlmPipeline
 
 class FileType(Enum):
     CODE = "code"
@@ -44,10 +48,40 @@ class DoclingParser:
         "results": ["results", "contributions", "main findings"]
     }
     
-    def __init__(self, ai_engine=None):
-        self.converter = DocumentConverter()
-        self.chunker = HierarchicalChunker()
+    def __init__(self, ai_engine=None, enable_vlm: bool = True):
         self.ai_engine = ai_engine
+        self.chunker = HierarchicalChunker()
+        
+        # Configure Docling Converter
+        if enable_vlm:
+            try:
+                # Configure VLM Pipeline Options for Ollama
+                pipeline_options = VlmPipelineOptions()
+                pipeline_options.vlm_options = GRANITEDOCLING_OLLAMA
+                # Ensure correct model tag is used
+                pipeline_options.vlm_options.params["model"] = "ibm/granite-docling:latest"
+                
+                # Enable remote services for Ollama API
+                try:
+                    pipeline_options.enable_remote_services = True
+                except:
+                    pass
+
+                self.converter = DocumentConverter(
+                    format_options={
+                        InputFormat.PDF: PdfFormatOption(
+                            pipeline_cls=VlmPipeline,
+                            pipeline_options=pipeline_options
+                        )
+                    }
+                )
+                self.converter.allowed_remote_services = True # Critical for Ollama
+                print("DoclingParser initialized with Ollama VLM pipeline.")
+            except Exception as e:
+                print(f"Failed to initialize VLM pipeline: {e}. Falling back to standard parser.")
+                self.converter = DocumentConverter()
+        else:
+            self.converter = DocumentConverter()
     
     def _detect_key_claim_section(self, metadata: Dict[str, Any]) -> str:
         """
@@ -98,6 +132,14 @@ class DoclingParser:
         # Check if chunk metadata indicates table
         if hasattr(chunk, 'meta'):
             meta_dict = chunk.meta.export_json_dict() if hasattr(chunk.meta, 'export_json_dict') else {}
+            
+            # Check for doc_items list (Docling v2 structure)
+            if "doc_items" in meta_dict:
+                for item in meta_dict["doc_items"]:
+                    if item.get("label") == "table":
+                        return True
+            
+            # Legacy/Fallback checks
             if meta_dict.get("doc_item_type") == "table" or meta_dict.get("is_table"):
                 return True
         
@@ -123,16 +165,39 @@ class DoclingParser:
             
             # Extract specific fields for structured access
             metadata["headings"] = raw_meta.get("headings", [])
-            metadata["doc_item_type"] = raw_meta.get("doc_item_type", "text")
+            
+            # Determine doc_item_type from doc_items if available
+            doc_item_type = raw_meta.get("doc_item_type", "text")
+            if "doc_items" in raw_meta and raw_meta["doc_items"]:
+                # Use the label of the first item as the type
+                doc_item_type = raw_meta["doc_items"][0].get("label", "text")
+            
+            metadata["doc_item_type"] = doc_item_type
             
             # Page info (Docling provides this for PDFs)
-            if "page_no" in raw_meta:
+            # Check doc_items for provenance first
+            page_no = None
+            bbox = None
+            
+            if "doc_items" in raw_meta:
+                for item in raw_meta["doc_items"]:
+                    if "prov" in item and item["prov"]:
+                        prov = item["prov"][0]
+                        page_no = prov.get("page_no")
+                        bbox = prov.get("bbox")
+                        break
+            
+            if page_no:
+                metadata["page_number"] = page_no
+            elif "page_no" in raw_meta:
                 metadata["page_number"] = raw_meta["page_no"]
             elif "page" in raw_meta:
                 metadata["page_number"] = raw_meta["page"]
             
             # Bounding box if available
-            if "bbox" in raw_meta:
+            if bbox:
+                metadata["bounding_box"] = bbox
+            elif "bbox" in raw_meta:
                 metadata["bounding_box"] = raw_meta["bbox"]
             
             # Section hierarchy
@@ -141,6 +206,7 @@ class DoclingParser:
         
         metadata["chunk_index"] = chunk_index
         return metadata
+
 
     async def _generate_table_summary_async(self, table_content: str) -> str:
         """
