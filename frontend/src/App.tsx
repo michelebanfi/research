@@ -5,9 +5,10 @@ import Sidebar from './components/Sidebar'
 import ChatTab from './components/ChatTab'
 import IngestTab from './components/IngestTab'
 import GraphTab from './components/GraphTab'
-import { MessageSquare, Upload, Share2, ArrowLeft } from 'lucide-react'
+import { MessageSquare, Upload, Share2, ArrowLeft, Radius } from 'lucide-react'
+import LangGraphTab from './components/LangGraphTab'
 
-type Tab = 'chat' | 'ingest' | 'graph'
+type Tab = 'chat' | 'ingest' | 'graph' | 'langgraph'
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat')
@@ -94,6 +95,17 @@ function App() {
                 <Share2 size={16} />
                 Graph
               </button>
+              <button
+                onClick={() => setActiveTab('langgraph')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  activeTab === 'langgraph'
+                    ? 'bg-secondary text-white shadow-sm'
+                    : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                }`}
+              >
+                <Radius size={16} />
+                Architecture
+              </button>
             </div>
 
             {/* Tab Content */}
@@ -101,6 +113,7 @@ function App() {
               {activeTab === 'chat' && <ChatTab />}
               {activeTab === 'ingest' && <IngestTab />}
               {activeTab === 'graph' && <GraphTab />}
+              {activeTab === 'langgraph' && <LangGraphTab />}
             </div>
           </>
         ) : (
