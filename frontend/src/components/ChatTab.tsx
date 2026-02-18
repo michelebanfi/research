@@ -5,13 +5,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import { Logo } from './Logo'
-import { 
-  Send, 
-  Settings, 
-  Brain, 
-  Loader2, 
-  Wifi, 
-  WifiOff, 
+import {
+  Send,
+  Settings,
+  Brain,
+  Loader2,
+  Wifi,
+  WifiOff,
   Activity,
   BookOpen,
   Lightbulb,
@@ -23,7 +23,8 @@ import {
   FileText,
   Globe,
   Network,
-  Plus
+  Plus,
+  Table
 } from 'lucide-react'
 
 export default function ChatTab() {
@@ -32,7 +33,7 @@ export default function ChatTab() {
   const [showSettings, setShowSettings] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  
+
   const {
     selectedProject,
     chatHistory,
@@ -65,10 +66,10 @@ export default function ChatTab() {
     const checkConnection = () => {
       setIsConnected(chatSocket.isConnected())
     }
-    
+
     // Check connection status periodically
     const interval = setInterval(checkConnection, 1000)
-    
+
     chatSocket.connect((data) => {
       if (data.type === 'event') {
         // Filter out token events - they're just streamed answer fragments
@@ -129,7 +130,7 @@ export default function ChatTab() {
 
     // Add user message
     addMessage({ role: 'user', content: input })
-    
+
     // Clear previous events
     clearAgentEvents()
     setCurrentResponse('')
@@ -178,11 +179,10 @@ export default function ChatTab() {
             </button>
             <button
               onClick={() => setShowSettings(!showSettings)}
-              className={`p-2 rounded-lg transition-colors ${
-                showSettings 
-                  ? 'bg-slate-200 text-secondary dark:bg-secondary/20 dark:text-secondary' 
-                  : 'hover:bg-slate-100 dark:hover:bg-muted/20'
-              }`}
+              className={`p-2 rounded-lg transition-colors ${showSettings
+                ? 'bg-slate-200 text-secondary dark:bg-secondary/20 dark:text-secondary'
+                : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                }`}
             >
               <Settings size={20} />
             </button>
@@ -201,7 +201,7 @@ export default function ChatTab() {
               />
               <span className="text-sm">Enable Re-ranking</span>
             </label>
-            
+
             <div className="flex items-center gap-3">
               <span className="text-sm">Context chunks:</span>
               <input
@@ -214,7 +214,7 @@ export default function ChatTab() {
               />
               <span className="text-sm w-8">{topK}</span>
             </div>
-            
+
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -238,20 +238,18 @@ export default function ChatTab() {
               <Logo />
             </div>
           )}
-          
+
           {chatHistory.map((msg, idx) => (
             <div
               key={idx}
-              className={`flex ${
-                msg.role === 'user' ? 'justify-end' : 'justify-start'
-              }`}
+              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'
+                }`}
             >
               <div
-                className={`max-w-[80%] rounded-lg px-4 py-3 shadow-sm ${
-                  msg.role === 'user'
-                    ? 'bg-secondary text-white'
-                    : 'bg-white border border-border dark:bg-surface'
-                }`}
+                className={`max-w-[80%] rounded-lg px-4 py-3 shadow-sm ${msg.role === 'user'
+                  ? 'bg-secondary text-white'
+                  : 'bg-white border border-border dark:bg-surface'
+                  }`}
               >
                 {msg.role === 'user' ? (
                   <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
@@ -266,7 +264,7 @@ export default function ChatTab() {
               </div>
             </div>
           ))}
-          
+
           {isChatting && (
             <div className="flex justify-start">
               <div className="bg-white border border-border dark:bg-surface rounded-lg px-4 py-3 flex items-center gap-2 shadow-sm">
@@ -275,7 +273,7 @@ export default function ChatTab() {
               </div>
             </div>
           )}
-          
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -345,7 +343,7 @@ export default function ChatTab() {
                 </div>
               </div>
             )}
-            
+
             {retrievedChunks.length === 0 ? (
               <p className="text-sm text-muted text-center py-4">
                 No context retrieved yet.
@@ -408,7 +406,7 @@ function AgentEventCard({ event }: { event: AgentEvent }) {
         <div className="flex-1 min-w-0">
           <p className="font-medium capitalize">{event.type}</p>
           <p className="text-muted mt-1">{event.content}</p>
-              {event.metadata && Object.keys(event.metadata).length > 0 && (
+          {event.metadata && Object.keys(event.metadata).length > 0 && (
             <details className="mt-2">
               <summary className="text-xs text-muted cursor-pointer">Details</summary>
               <pre className="mt-1 text-xs bg-slate-100 dark:bg-black/20 p-2 rounded overflow-x-auto">
@@ -477,8 +475,13 @@ function MarkdownMessage({ content }: { content: string }) {
 
 function ContextChunk({ chunk, index }: { chunk: any; index: number }) {
   const [expanded, setExpanded] = useState(index === 0)
-  
+
   const getSourceIcon = () => {
+    // REQ-FIX-TABLE: Identify table checks
+    if (chunk.is_table || chunk.metadata?.is_table) {
+      return <Table size={14} className="text-emerald-500" />
+    }
+
     switch (chunk.source) {
       case 'vector': return <Search size={14} />
       case 'web': return <Globe size={14} />
@@ -488,6 +491,11 @@ function ContextChunk({ chunk, index }: { chunk: any; index: number }) {
   }
 
   const getSourceLabel = () => {
+    // REQ-FIX-TABLE: Add Table label
+    if (chunk.is_table || chunk.metadata?.is_table) {
+      return 'Table Source'
+    }
+
     switch (chunk.source) {
       case 'vector': return 'Vector Search'
       case 'web': return 'Web Search'
@@ -508,7 +516,7 @@ function ContextChunk({ chunk, index }: { chunk: any; index: number }) {
         </div>
         <span className="text-xs text-muted">{getSourceLabel()}</span>
       </button>
-      
+
       {expanded && (
         <div className="px-3 pb-3">
           <div className="text-xs text-muted mb-2">

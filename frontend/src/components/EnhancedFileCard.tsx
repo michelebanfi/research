@@ -113,7 +113,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
     setTimeout(() => setHighlightedEntity(null), 3000)
   }
   
-  const tableChunks = details?.chunks.filter(c => c.is_table) || []
+  const tableChunks = details?.chunks.filter(c => c.is_table || c.metadata?.is_table) || []
   
   return (
     <div className="bg-surface rounded-lg border border-border overflow-hidden shadow-sm">

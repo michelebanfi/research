@@ -53,7 +53,7 @@ export default function ChunkInspector({ chunk, onClose, allChunks = [] }: Chunk
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-border">
         <div className="flex items-center gap-2">
-          {chunk.is_table ? (
+          {(chunk.is_table || chunk.metadata?.is_table) ? (
             <Table size={18} className="text-emerald-500" />
           ) : chunk.is_reference ? (
             <BookOpen size={18} className="text-amber-500" />
@@ -92,7 +92,7 @@ export default function ChunkInspector({ chunk, onClose, allChunks = [] }: Chunk
           <div className="flex justify-between">
             <span className="text-muted">Type:</span>
             <span>
-              {chunk.is_table ? 'Table' : chunk.is_reference ? 'Reference' : 'Text'}
+              {(chunk.is_table || chunk.metadata?.is_table) ? 'Table' : chunk.is_reference ? 'Reference' : 'Text'}
             </span>
           </div>
           {chunk.metadata?.page_number && (

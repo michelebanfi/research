@@ -232,7 +232,7 @@ def render_context_panel():
                 source_badge = "Vector Search"
                 if source_type == 'web':
                      source_badge = "Web Search"
-                elif source_type == 'graph':
+                 elif source_type == 'graph':
                      source_badge = "Graph Retrieval"
                      
                 st.caption(f"**{source_badge}**")

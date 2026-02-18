@@ -99,7 +99,7 @@ def process_upload(uploaded_file, db, ai):
             elif ftype == FileType.DOCUMENT and chunks:
                 with st.expander("📄 Document Preview", expanded=True):
                     sample = chunks[0].get("content", "")[:800]
-                    if len(chunks[0].get("content", "")) > 800:
+                if len(chunks[0].get("content", "")) > 800:
                         sample += "..."
                     st.markdown(sample)
             

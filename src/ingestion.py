@@ -349,12 +349,64 @@ Description:"""
                 if key_claim_section:
                     chunk_data["metadata"]["key_claim_section"] = key_claim_section
                 
+
                 if is_table:
                     chunk_data["metadata"]["is_table"] = True
                     chunk_data["metadata"]["table_raw_content"] = chunk.text
-                    chunk_data["content"] = chunk.text
-                    chunk_data["embedding_content"] = f"[TABLE] {chunk.text[:500]}"
-                    chunk_data["embedding_text"] = f"[TABLE] {chunk.text[:500]}"
+                    
+                    # REQ-VLM-FIX: Extract Markdown table if available
+                    # Docling v2: Tables are referenced in doc_items
+                    try:
+                        table_markdown = None
+                        if hasattr(chunk, 'meta') and hasattr(chunk.meta, 'doc_items'):
+                            for item in chunk.meta.doc_items:
+                                if item.label == "table":
+                                    # Resolve reference if possible
+                                    # In v2, we might iterate result.document.tables to find matching prov?
+                                    # Or check if we can get it from the item self_ref
+                                    pass
+                        
+                        # Simpler approach: Iterate through document tables and match by location/provenance? 
+                        # Or rely on the fact that HierarchicalChunker keeps structure?
+                        # Actually, result.document.tables is a list.
+                        # References in doc_items might be like '#/tables/0'
+                        
+                        found_table = None
+                        if hasattr(chunk, 'meta') and hasattr(chunk.meta, 'doc_items'):
+                            for item in chunk.meta.doc_items:
+                                # Check label robustly (handle Enum or string)
+                                if str(item.label) == 'table' and hasattr(item, 'self_ref'):
+                                    print(f"Found table reference in chunk: {item.self_ref}")
+                                    ref = item.self_ref # e.g. '#/tables/0'
+                                    if ref.startswith('#/tables/'):
+                                        try:
+                                            table_idx = int(ref.split('/')[-1])
+                                            if 0 <= table_idx < len(result.document.tables):
+                                                found_table = result.document.tables[table_idx]
+                                                print(f"Resolved table index: {table_idx}")
+                                                break
+                                        except ValueError:
+                                            print(f"Invalid table reference format: {ref}")
+                        
+                        if found_table and hasattr(found_table, 'export_to_markdown'):
+                            table_markdown = found_table.export_to_markdown()
+                        
+                        if table_markdown:
+                            chunk_data["content"] = table_markdown
+                            chunk_data["embedding_content"] = f"[TABLE] {table_markdown[:1000]}"
+                            chunk_data["embedding_text"] = f"[TABLE] {table_markdown[:1000]}"
+                        else:
+                            # Fallback
+                            chunk_data["content"] = chunk.text
+                            chunk_data["embedding_content"] = f"[TABLE] {chunk.text[:500]}"
+                            chunk_data["embedding_text"] = f"[TABLE] {chunk.text[:500]}"
+                            
+                    except Exception as e:
+                        print(f"Error extracting table markdown: {e}")
+                        chunk_data["content"] = chunk.text
+                        chunk_data["embedding_content"] = f"[TABLE] {chunk.text[:500]}"
+                        chunk_data["embedding_text"] = f"[TABLE] {chunk.text[:500]}"
+                
                 
                 leaf_chunks.append(chunk_data)
             

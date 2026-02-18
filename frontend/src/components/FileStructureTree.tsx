@@ -72,7 +72,7 @@ function getChunkIcon(chunk: Chunk, isExpanded: boolean, hasChildren?: boolean) 
   if (chunk.is_reference) {
     return <BookOpen size={14} className="text-amber-500" />
   }
-  if (chunk.is_table) {
+  if (chunk.is_table || chunk.metadata?.is_table) {
     return <Table size={14} className="text-emerald-500" />
   }
   if (hasChildren) {
@@ -141,7 +141,7 @@ function TreeNodeComponent({
         </span>
         
         <span className="text-sm truncate flex-1 ml-2" title={content}>
-          {node.is_table ? '[Table] ' : ''}
+          {(node.is_table || node.metadata?.is_table) ? '[Table] ' : ''}
           {node.is_reference ? '[Ref] ' : ''}
           {displayText || 'Empty chunk'}
         </span>
@@ -181,7 +181,7 @@ export default function FileStructureTree({
   
   const stats = useMemo(() => ({
     total: chunks.length,
-    tables: chunks.filter(c => c.is_table).length,
+    tables: chunks.filter(c => c.is_table || c.metadata?.is_table).length,
     references: chunks.filter(c => c.is_reference).length,
     parents: chunks.filter(c => c.chunk_level === 0).length,
     leaves: chunks.filter(c => c.chunk_level > 0).length,
