@@ -58,6 +58,12 @@ export const api = {
     const response = await axios.get(`${API_BASE}/projects/${projectId}/graph`)
     return response.data
   },
+
+  // Code execution sandbox
+  async runCode(code: string, timeout = 15): Promise<{ success: boolean; output: string; image_b64: string[] }> {
+    const response = await axios.post(`${API_BASE}/run-code`, { code, timeout })
+    return response.data
+  },
 }
 
 // ---------------------------------------------------------------------------

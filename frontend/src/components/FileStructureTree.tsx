@@ -1,10 +1,10 @@
 import { useState, useMemo } from 'react'
-import { 
-  FolderOpen, 
-  FileText, 
-  Table, 
-  BookOpen, 
-  ChevronRight, 
+import {
+  FolderOpen,
+  FileText,
+  Table,
+  BookOpen,
+  ChevronRight,
   ChevronDown,
   Layers,
   Hash
@@ -22,6 +22,7 @@ interface Chunk {
     headings?: string[]
     doc_item_type?: string
     page_number?: number
+    is_table?: boolean
   }
 }
 
@@ -38,7 +39,7 @@ interface FileStructureTreeProps {
 
 function buildChunkTree(chunks: Chunk[]): TreeNode[] {
   const chunkMap = new Map<string, TreeNode>()
-  
+
   // First pass: create nodes
   chunks.forEach(chunk => {
     chunkMap.set(chunk.id, {
@@ -46,7 +47,7 @@ function buildChunkTree(chunks: Chunk[]): TreeNode[] {
       children: []
     })
   })
-  
+
   // Second pass: build parent-child relationships
   const roots: TreeNode[] = []
   chunks.forEach(chunk => {
@@ -58,13 +59,13 @@ function buildChunkTree(chunks: Chunk[]): TreeNode[] {
       roots.push(node)
     }
   })
-  
+
   // Sort by chunk_index
   roots.sort((a, b) => (a.chunk_index || 0) - (b.chunk_index || 0))
   roots.forEach(root => {
     root.children.sort((a, b) => (a.chunk_index || 0) - (b.chunk_index || 0))
   })
-  
+
   return roots
 }
 
@@ -76,21 +77,21 @@ function getChunkIcon(chunk: Chunk, isExpanded: boolean, hasChildren?: boolean) 
     return <Table size={14} className="text-emerald-500" />
   }
   if (hasChildren) {
-    return isExpanded 
+    return isExpanded
       ? <FolderOpen size={14} className="text-blue-500" />
       : <FolderOpen size={14} className="text-blue-500" />
   }
   return <FileText size={14} className="text-slate-400" />
 }
 
-function TreeNodeComponent({ 
-  node, 
-  level, 
-  selectedChunkId, 
+function TreeNodeComponent({
+  node,
+  level,
+  selectedChunkId,
   onChunkSelect,
   highlightedEntity,
   defaultExpanded = false
-}: { 
+}: {
   node: TreeNode
   level: number
   selectedChunkId?: string | null
@@ -101,18 +102,18 @@ function TreeNodeComponent({
   const [isExpanded, setIsExpanded] = useState(defaultExpanded || level < 2)
   const hasChildren = node.children && node.children.length > 0
   const isSelected = selectedChunkId === node.id
-  
+
   // Check if this chunk should be highlighted based on entity
-  const shouldHighlight = highlightedEntity && 
+  const shouldHighlight = highlightedEntity &&
     node.content.toLowerCase().includes(highlightedEntity.toLowerCase())
-  
+
   const content = node.content || ''
   const preview = content.slice(0, 60).replace(/\n/g, ' ')
   const displayText = preview.length < content.length ? preview + '...' : preview
-  
+
   return (
     <div className="select-none">
-      <div 
+      <div
         className={`
           flex items-center gap-1 py-1 px-2 rounded cursor-pointer
           transition-colors duration-150
@@ -133,26 +134,26 @@ function TreeNodeComponent({
           </span>
         )}
         {!hasChildren && <span className="w-[14px]" />}
-        
+
         {getChunkIcon(node, isExpanded, hasChildren)}
-        
+
         <span className="text-xs text-slate-500 ml-1">
           #{node.chunk_index}
         </span>
-        
+
         <span className="text-sm truncate flex-1 ml-2" title={content}>
           {(node.is_table || node.metadata?.is_table) ? '[Table] ' : ''}
           {node.is_reference ? '[Ref] ' : ''}
           {displayText || 'Empty chunk'}
         </span>
-        
+
         {node.metadata?.page_number && (
           <span className="text-xs text-slate-400 ml-2">
             p.{node.metadata.page_number}
           </span>
         )}
       </div>
-      
+
       {isExpanded && hasChildren && (
         <div>
           {node.children.map(child => (
@@ -171,14 +172,14 @@ function TreeNodeComponent({
   )
 }
 
-export default function FileStructureTree({ 
-  chunks, 
+export default function FileStructureTree({
+  chunks,
   selectedChunkId,
   onChunkSelect,
   highlightedEntity
 }: FileStructureTreeProps) {
   const tree = useMemo(() => buildChunkTree(chunks), [chunks])
-  
+
   const stats = useMemo(() => ({
     total: chunks.length,
     tables: chunks.filter(c => c.is_table || c.metadata?.is_table).length,
@@ -186,7 +187,7 @@ export default function FileStructureTree({
     parents: chunks.filter(c => c.chunk_level === 0).length,
     leaves: chunks.filter(c => c.chunk_level > 0).length,
   }), [chunks])
-  
+
   if (chunks.length === 0) {
     return (
       <div className="text-center py-8 text-muted">
@@ -195,7 +196,7 @@ export default function FileStructureTree({
       </div>
     )
   }
-  
+
   return (
     <div className="h-full flex flex-col">
       {/* Stats Header */}
@@ -221,7 +222,7 @@ export default function FileStructureTree({
           <span className="text-muted">refs</span>
         </div>
       </div>
-      
+
       {/* Tree Content */}
       <div className="flex-1 overflow-y-auto py-2">
         {tree.map(node => (

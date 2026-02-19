@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAppStore, AnalysisEvent } from '../stores/appStore'
 import { analysisSocket } from '../services/api'
+import RunCodeBlock from './RunCodeBlock'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -181,9 +182,9 @@ export default function PaperAnalysisTab() {
     const selectedFileData = files.find((f) => f.id === selectedAnalysisFileId)
 
     return (
-        <div className="flex h-full">
+        <div className="flex h-full overflow-hidden">
             {/* ── Main Output Area ─────────────────────────────────────── */}
-            <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex-1 flex flex-col min-w-0 min-h-0">
                 {/* Header */}
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border">
                     <div className="flex items-center gap-2">
@@ -297,11 +298,17 @@ export default function PaperAnalysisTab() {
                                     rehypePlugins={[rehypeKatex]}
                                     components={{
                                         code({ node, inline, className, children, ...props }: any) {
-                                            return !inline ? (
-                                                <pre className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg overflow-x-auto my-2 text-xs">
-                                                    <code className={className} {...props}>{children}</code>
-                                                </pre>
-                                            ) : (
+                                            const language = (className ?? '').replace('language-', '')
+                                            const codeText = String(children).replace(/\n$/, '')
+                                            if (!inline) {
+                                                return (
+                                                    <RunCodeBlock
+                                                        code={codeText}
+                                                        language={language}
+                                                    />
+                                                )
+                                            }
+                                            return (
                                                 <code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-sm" {...props}>
                                                     {children}
                                                 </code>

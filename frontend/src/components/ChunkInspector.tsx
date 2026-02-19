@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { 
-  X, 
-  Copy, 
+import {
+  X,
+  Copy,
   Check,
   FileText,
   Table,
@@ -23,6 +23,7 @@ interface Chunk {
     doc_item_type?: string
     page_number?: number
     section_header?: string
+    is_table?: boolean
   }
 }
 
@@ -34,20 +35,20 @@ interface ChunkInspectorProps {
 
 export default function ChunkInspector({ chunk, onClose, allChunks = [] }: ChunkInspectorProps) {
   const [copied, setCopied] = useState(false)
-  
+
   if (!chunk) return null
-  
+
   const handleCopy = () => {
     navigator.clipboard.writeText(chunk.content)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
-  
+
   // Find parent chunk info
-  const parentChunk = chunk.parent_chunk_id 
+  const parentChunk = chunk.parent_chunk_id
     ? allChunks.find(c => c.id === chunk.parent_chunk_id)
     : null
-  
+
   return (
     <div className="w-80 border-l border-border bg-surface flex flex-col h-full">
       {/* Header */}
@@ -69,7 +70,7 @@ export default function ChunkInspector({ chunk, onClose, allChunks = [] }: Chunk
           <X size={18} />
         </button>
       </div>
-      
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {/* Metadata */}
@@ -110,14 +111,14 @@ export default function ChunkInspector({ chunk, onClose, allChunks = [] }: Chunk
             </div>
           )}
         </div>
-        
+
         {/* Section hierarchy */}
         {chunk.metadata?.headings && chunk.metadata.headings.length > 0 && (
           <div className="pt-2 border-t border-border">
             <p className="text-xs text-muted mb-2">Section Path:</p>
             <div className="space-y-1">
               {chunk.metadata.headings.map((heading, idx) => (
-                <div 
+                <div
                   key={idx}
                   className="flex items-center gap-2 text-sm"
                   style={{ paddingLeft: `${idx * 12}px` }}
@@ -129,7 +130,7 @@ export default function ChunkInspector({ chunk, onClose, allChunks = [] }: Chunk
             </div>
           </div>
         )}
-        
+
         {/* Content */}
         <div className="pt-2 border-t border-border">
           <div className="flex items-center justify-between mb-2">
@@ -155,7 +156,7 @@ export default function ChunkInspector({ chunk, onClose, allChunks = [] }: Chunk
             {chunk.content}
           </div>
         </div>
-        
+
         {/* Stats */}
         <div className="pt-2 border-t border-border">
           <p className="text-xs text-muted mb-2">Statistics:</p>

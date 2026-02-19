@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
-import { 
-  FileText, 
-  Trash2, 
-  ChevronDown, 
+import {
+  FileText,
+  Trash2,
+  ChevronDown,
   ChevronUp,
   FolderOpen,
   Table,
@@ -42,6 +42,7 @@ interface Chunk {
     doc_item_type?: string
     page_number?: number
     section_header?: string
+    is_table?: boolean
   }
 }
 
@@ -80,14 +81,14 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
   const [error, setError] = useState<string | null>(null)
   const [selectedChunk, setSelectedChunk] = useState<Chunk | null>(null)
   const [highlightedEntity, setHighlightedEntity] = useState<string | null>(null)
-  
+
   // Load file details when expanded
   useEffect(() => {
     if (isExpanded && !details && !isLoading) {
       loadDetails()
     }
   }, [isExpanded])
-  
+
   const loadDetails = async () => {
     setIsLoading(true)
     setError(null)
@@ -101,20 +102,20 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
       setIsLoading(false)
     }
   }
-  
+
   const handleChunkSelect = (chunk: Chunk) => {
     setSelectedChunk(chunk)
   }
-  
+
   const handleEntityClick = (entityName: string) => {
     setHighlightedEntity(entityName)
     setActiveTab('structure')
     // Clear highlight after 3 seconds
     setTimeout(() => setHighlightedEntity(null), 3000)
   }
-  
+
   const tableChunks = details?.chunks.filter(c => c.is_table || c.metadata?.is_table) || []
-  
+
   return (
     <div className="bg-surface rounded-lg border border-border overflow-hidden shadow-sm">
       {/* Header */}
@@ -127,7 +128,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
           <p className="text-xs text-muted mt-1">
             Processed: {new Date(file.processed_at).toLocaleString()}
           </p>
-          
+
           {/* Quick stats row */}
           {details && (
             <div className="flex items-center gap-3 mt-2 text-xs">
@@ -156,7 +157,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
             </div>
           )}
         </div>
-        
+
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsExpanded(!isExpanded)}
@@ -183,7 +184,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
           </button>
         </div>
       </div>
-      
+
       {/* Expanded content */}
       {isExpanded && (
         <div className="border-t border-border">
@@ -196,7 +197,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
             <div className="flex items-center justify-center py-12 text-red-500">
               <AlertCircle size={20} className="mr-2" />
               <span>{error}</span>
-              <button 
+              <button
                 onClick={loadDetails}
                 className="ml-4 text-sm underline"
               >
@@ -237,7 +238,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
                     label="Summary"
                   />
                 </div>
-                
+
                 {/* Tab content */}
                 <div className="flex-1 overflow-hidden">
                   {activeTab === 'structure' && (
@@ -248,17 +249,17 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
                       highlightedEntity={highlightedEntity}
                     />
                   )}
-                  
+
                   {activeTab === 'tables' && (
                     <TablesView tables={tableChunks} />
                   )}
-                  
+
                   {activeTab === 'entities' && (
-                    <EntitiesView 
+                    <EntitiesView
                       entities={details.entities}
                     />
                   )}
-                  
+
                   {activeTab === 'summary' && (
                     <div className="p-6 overflow-y-auto h-full">
                       <div className="max-w-3xl">
@@ -266,7 +267,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
                         <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
                           {file.summary || 'No summary available'}
                         </p>
-                        
+
                         {file.metadata?.keywords && file.metadata.keywords.length > 0 && (
                           <div className="mt-6">
                             <h6 className="text-sm font-medium mb-2">Keywords</h6>
@@ -283,7 +284,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
                             </div>
                           </div>
                         )}
-                        
+
                         <div className="mt-6 pt-4 border-t border-border">
                           <h6 className="text-sm font-medium mb-2">File Information</h6>
                           <div className="space-y-1 text-xs text-muted">
@@ -296,7 +297,7 @@ export default function EnhancedFileCard({ file, onDelete }: EnhancedFileCardPro
                   )}
                 </div>
               </div>
-              
+
               {/* Chunk Inspector Panel */}
               {selectedChunk && (
                 <ChunkInspector
@@ -327,8 +328,8 @@ function TabButton({ active, onClick, icon, label, count }: TabButtonProps) {
       onClick={onClick}
       className={`
         flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors
-        ${active 
-          ? 'text-secondary border-b-2 border-secondary bg-white dark:bg-slate-800' 
+        ${active
+          ? 'text-secondary border-b-2 border-secondary bg-white dark:bg-slate-800'
           : 'text-muted hover:text-text hover:bg-slate-100 dark:hover:bg-slate-800/50'
         }
       `}
@@ -338,8 +339,8 @@ function TabButton({ active, onClick, icon, label, count }: TabButtonProps) {
       {count !== undefined && count > 0 && (
         <span className={`
           ml-1 px-2 py-0.5 text-xs rounded-full
-          ${active 
-            ? 'bg-secondary/10 text-secondary' 
+          ${active
+            ? 'bg-secondary/10 text-secondary'
             : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-400'
           }
         `}>

@@ -595,6 +595,69 @@ async def websocket_analyze(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # ============================================================================
+# Code Execution Endpoint (for Paper Analysis code snippets)
+# ============================================================================
+
+class RunCodeRequest(BaseModel):
+    code: str
+    timeout: float = 15.0
+
+@app.post("/api/run-code")
+async def run_code_endpoint(req: RunCodeRequest):
+    """
+    Execute a Python snippet in the sandbox.
+    Supports matplotlib: plt.show() is intercepted and the figure is returned
+    as a base64-encoded PNG in the `image_b64` field.
+    """
+    from src.sandbox import run_code as sandbox_run
+
+    # Wrap the user code so that matplotlib renders to a buffer instead of a
+    # GUI window, and we capture the image as base64.
+    MATPLOTLIB_WRAPPER = """
+import base64 as _b64, io as _io
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as _plt_orig
+    _fig_bytes_list = []
+    _orig_show = _plt_orig.show
+    def _patched_show(*args, **kwargs):
+        buf = _io.BytesIO()
+        _plt_orig.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+        buf.seek(0)
+        _fig_bytes_list.append(_b64.b64encode(buf.read()).decode())
+        _plt_orig.close('all')
+    _plt_orig.show = _patched_show
+except ImportError:
+    _fig_bytes_list = []
+
+{user_code}
+
+# Emit captured figures as a special marker line
+if '_fig_bytes_list' in dir() and _fig_bytes_list:
+    print('__FIGURE__:' + '|'.join(_fig_bytes_list))
+"""
+    wrapped = MATPLOTLIB_WRAPPER.format(user_code=req.code)
+
+    success, raw_output = await sandbox_run(wrapped, timeout_s=req.timeout)
+
+    # Parse out any embedded figure data
+    image_b64: list[str] = []
+    output_lines = []
+    for line in raw_output.splitlines():
+        if line.startswith("__FIGURE__:"):
+            image_b64 = line[len("__FIGURE__:"):].split("|")
+        else:
+            output_lines.append(line)
+    output = "\n".join(output_lines).strip()
+
+    return {
+        "success": success,
+        "output": output,
+        "image_b64": image_b64,
+    }
+
+# ============================================================================
 # File Upload Endpoint
 # ============================================================================
 
