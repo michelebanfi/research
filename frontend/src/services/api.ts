@@ -30,6 +30,11 @@ export const api = {
     return response.data
   },
 
+  async getFileSections(fileId: string): Promise<any> {
+    const response = await axios.get(`${API_BASE}/files/${fileId}/sections`)
+    return response.data
+  },
+
   async getUploadProgress(tempFileId: string): Promise<any> {
     const response = await axios.get(`${API_BASE}/upload/progress/${tempFileId}`)
     return response.data
@@ -55,7 +60,9 @@ export const api = {
   },
 }
 
+// ---------------------------------------------------------------------------
 // WebSocket for chat - Singleton pattern
+// ---------------------------------------------------------------------------
 class ChatWebSocket {
   private ws: WebSocket | null = null
   private messageCallback: ((data: any) => void) | null = null
@@ -75,7 +82,7 @@ class ChatWebSocket {
     this.isIntentionallyClosed = false
     this.messageCallback = onMessage
     this.url = `ws://${window.location.host}/ws/chat`
-    
+
     console.log('Connecting WebSocket...')
     this.ws = new WebSocket(this.url)
 
@@ -103,8 +110,7 @@ class ChatWebSocket {
     this.ws.onclose = (event) => {
       console.log('WebSocket disconnected:', event.code, event.reason)
       this.ws = null
-      
-      // Only reconnect if not intentionally closed
+
       if (!this.isIntentionallyClosed && this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++
         const delay = this.reconnectDelay * this.reconnectAttempts
@@ -126,7 +132,6 @@ class ChatWebSocket {
       this.ws.send(JSON.stringify(message))
     } else {
       console.error('WebSocket not connected, state:', this.ws?.readyState)
-      // Store message and retry? For now just error
       throw new Error('WebSocket not connected')
     }
   }
@@ -146,3 +151,84 @@ class ChatWebSocket {
 }
 
 export const chatSocket = new ChatWebSocket()
+
+// ---------------------------------------------------------------------------
+// WebSocket for Paper Analysis — Singleton
+// ---------------------------------------------------------------------------
+
+export type AnalysisMessageCallback = (data: any) => void
+
+class AnalysisWebSocket {
+  private ws: WebSocket | null = null
+  private messageCallback: AnalysisMessageCallback | null = null
+  private reconnectAttempts = 0
+  private maxReconnectAttempts = 5
+  private reconnectDelay = 1000
+  private intentionallyClosed = false
+
+  connect(onMessage: AnalysisMessageCallback) {
+    // Always update the callback — never allow a stale or no-op callback to stick
+    this.messageCallback = onMessage
+
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+      return
+    }
+
+    this.intentionallyClosed = false
+    this._open()
+  }
+
+  private _open() {
+    const url = `ws://${window.location.host}/ws/analyze`
+    this.ws = new WebSocket(url)
+
+    this.ws.onopen = () => {
+      console.log('Analysis WebSocket connected')
+      this.reconnectAttempts = 0
+    }
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (this.messageCallback) this.messageCallback(data)
+      } catch (err) {
+        console.error('Error parsing analysis WS message:', err)
+      }
+    }
+
+    this.ws.onerror = (err) => {
+      console.error('Analysis WebSocket error:', err)
+    }
+
+    this.ws.onclose = () => {
+      console.log('Analysis WebSocket closed')
+      this.ws = null
+      if (!this.intentionallyClosed && this.reconnectAttempts < this.maxReconnectAttempts) {
+        this.reconnectAttempts++
+        const delay = this.reconnectDelay * this.reconnectAttempts
+        console.log(`Analysis WS: reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
+        setTimeout(() => this._open(), delay)
+      }
+    }
+  }
+
+  send(payload: { file_id: string; project_id: string }) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload))
+    } else {
+      throw new Error('Analysis WebSocket not connected')
+    }
+  }
+
+  disconnect() {
+    this.intentionallyClosed = true
+    this.ws?.close()
+    this.ws = null
+  }
+
+  isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN
+  }
+}
+
+export const analysisSocket = new AnalysisWebSocket()

@@ -5,19 +5,20 @@ import Sidebar from './components/Sidebar'
 import ChatTab from './components/ChatTab'
 import IngestTab from './components/IngestTab'
 import GraphTab from './components/GraphTab'
-import { MessageSquare, Upload, Share2, ArrowLeft, Radius } from 'lucide-react'
 import LangGraphTab from './components/LangGraphTab'
+import PaperAnalysisTab from './components/PaperAnalysisTab'
+import { MessageSquare, Upload, Share2, ArrowLeft, Radius, Microscope } from 'lucide-react'
 
-type Tab = 'chat' | 'ingest' | 'graph' | 'langgraph'
+type Tab = 'chat' | 'ingest' | 'graph' | 'langgraph' | 'analyze'
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat')
-  const { 
-    selectedProject, 
-    setProjects, 
+  const {
+    selectedProject,
+    setProjects,
     clearChat,
     clearAgentEvents,
-    setCurrentChatId 
+    setCurrentChatId
   } = useAppStore()
 
   // Load projects on mount
@@ -56,7 +57,7 @@ function App() {
   return (
     <div className="flex h-screen bg-background text-text">
       <Sidebar />
-      
+
       <main className="flex-1 flex flex-col overflow-hidden">
         {selectedProject ? (
           <>
@@ -64,47 +65,53 @@ function App() {
             <div className="flex items-center gap-1 px-4 py-2 bg-surface border-b border-border">
               <button
                 onClick={() => setActiveTab('chat')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === 'chat'
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'chat'
                     ? 'bg-secondary text-white shadow-sm'
                     : 'hover:bg-slate-100 dark:hover:bg-muted/20'
-                }`}
+                  }`}
               >
                 <MessageSquare size={16} />
                 Chat
               </button>
               <button
                 onClick={() => setActiveTab('ingest')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === 'ingest'
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'ingest'
                     ? 'bg-secondary text-white shadow-sm'
                     : 'hover:bg-slate-100 dark:hover:bg-muted/20'
-                }`}
+                  }`}
               >
                 <Upload size={16} />
                 Ingest
               </button>
               <button
                 onClick={() => setActiveTab('graph')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === 'graph'
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'graph'
                     ? 'bg-secondary text-white shadow-sm'
                     : 'hover:bg-slate-100 dark:hover:bg-muted/20'
-                }`}
+                  }`}
               >
                 <Share2 size={16} />
                 Graph
               </button>
               <button
                 onClick={() => setActiveTab('langgraph')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === 'langgraph'
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'langgraph'
                     ? 'bg-secondary text-white shadow-sm'
                     : 'hover:bg-slate-100 dark:hover:bg-muted/20'
-                }`}
+                  }`}
               >
                 <Radius size={16} />
                 Architecture
+              </button>
+              <button
+                onClick={() => setActiveTab('analyze')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'analyze'
+                    ? 'bg-secondary text-white shadow-sm'
+                    : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                  }`}
+              >
+                <Microscope size={16} />
+                Analyze
               </button>
             </div>
 
@@ -114,6 +121,7 @@ function App() {
               {activeTab === 'ingest' && <IngestTab />}
               {activeTab === 'graph' && <GraphTab />}
               {activeTab === 'langgraph' && <LangGraphTab />}
+              {activeTab === 'analyze' && <PaperAnalysisTab />}
             </div>
           </>
         ) : (

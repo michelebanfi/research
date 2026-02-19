@@ -168,6 +168,10 @@ class FileUploadResponse(BaseModel):
     nodes_count: int = 0
     edges_count: int = 0
 
+class PaperAnalysisRequest(BaseModel):
+    file_id: str
+    project_id: str
+
 # ============================================================================
 # REST Endpoints
 # ============================================================================
@@ -338,6 +342,29 @@ async def get_project_graph(project_id: str, limit: int = 500):
         logger.error(f"Error fetching graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/files/{file_id}/sections")
+async def get_file_sections(file_id: str):
+    """Get ordered list of sections for a file (used by Paper Analysis UI)"""
+    logger.info(f"Fetching sections for file: {file_id}")
+    try:
+        # Verify file exists
+        file_resp = app_state.db.client.table("files").select("id, name").eq("id", file_id).execute()
+        if not file_resp.data:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        sections = app_state.db.get_file_sections(file_id)
+        return {
+            "file_id": file_id,
+            "file_name": file_resp.data[0]["name"],
+            "sections": sections,
+            "total": len(sections),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching sections: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================================================
 # WebSocket for Chat Streaming
 # ============================================================================
@@ -487,6 +514,84 @@ async def websocket_chat(websocket: WebSocket):
         logger.info("Chat WebSocket disconnected")
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
+        manager.disconnect(websocket)
+
+# ============================================================================
+# WebSocket for Paper Analysis Streaming
+# ============================================================================
+
+@app.websocket("/ws/analyze")
+async def websocket_analyze(websocket: WebSocket):
+    """WebSocket endpoint for streaming paper analysis"""
+    await manager.connect(websocket)
+    logger.info("Analysis WebSocket connected")
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            file_id = data.get("file_id")
+            project_id = data.get("project_id")
+
+            if not file_id or not project_id:
+                await manager.send_message({
+                    "type": "error",
+                    "content": "Missing file_id or project_id"
+                }, websocket)
+                continue
+
+            logger.info(f"Paper analysis request: file={file_id} project={project_id}")
+
+            from src.paper_analyzer import PaperAnalyzer
+
+            async def safe_send_analysis_event(event: dict):
+                try:
+                    if websocket.client_state.CONNECTED:
+                        await websocket.send_json({
+                            "type": "analysis_event",
+                            "event": event
+                        })
+                except Exception as e:
+                    logger.debug(f"Could not send analysis event: {e}")
+
+            try:
+                await manager.send_message({
+                    "type": "status",
+                    "content": "Starting paper analysis..."
+                }, websocket)
+
+                analyzer = PaperAnalyzer(
+                    ai_engine=app_state.ai_engine,
+                    db=app_state.db,
+                    file_id=file_id,
+                )
+
+                final_markdown = await analyzer.run(
+                    event_callback=safe_send_analysis_event
+                )
+
+                await manager.send_message({
+                    "type": "result",
+                    "content": {
+                        "success": True,
+                        "markdown": final_markdown,
+                        "file_id": file_id,
+                    }
+                }, websocket)
+
+                logger.info(f"Paper analysis completed for file {file_id}")
+
+            except Exception as e:
+                logger.error(f"Error in paper analysis: {e}", exc_info=True)
+                await manager.send_message({
+                    "type": "error",
+                    "content": f"Analysis failed: {str(e)}"
+                }, websocket)
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        logger.info("Analysis WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"Analysis WebSocket error: {e}", exc_info=True)
         manager.disconnect(websocket)
 
 # ============================================================================
