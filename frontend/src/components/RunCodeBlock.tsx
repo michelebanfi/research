@@ -74,7 +74,7 @@ export default function RunCodeBlock({ code, language }: Props) {
             </div>
 
             {/* Source code */}
-            <pre className="bg-slate-900 p-3 overflow-x-auto text-sm text-slate-100 m-0">
+            <pre className="run-code-pre bg-slate-900 p-3 overflow-x-auto text-sm text-slate-100 m-0">
                 <code>{code}</code>
             </pre>
 

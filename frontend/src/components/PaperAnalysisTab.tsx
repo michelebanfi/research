@@ -50,6 +50,7 @@ export default function PaperAnalysisTab() {
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
     const [totalSections, setTotalSections] = useState(0)
     const outputEndRef = useRef<HTMLDivElement>(null)
+    const scrollContainerRef = useRef<HTMLDivElement>(null)
 
     // Keep track of connection status
     useEffect(() => {
@@ -59,10 +60,12 @@ export default function PaperAnalysisTab() {
         return () => clearInterval(interval)
     }, [])
 
-    // Auto-scroll output as content comes in
+    // Auto-scroll output as content comes in — scroll the container directly
+    // to avoid scrollIntoView accidentally scrolling the page.
     useEffect(() => {
-        if (analysisStatus === 'running') {
-            outputEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+        if (analysisStatus === 'running' && scrollContainerRef.current) {
+            const el = scrollContainerRef.current
+            el.scrollTop = el.scrollHeight
         }
     }, [analysisMarkdown, analysisStatus])
 
@@ -252,7 +255,7 @@ export default function PaperAnalysisTab() {
                 </div>
 
                 {/* Output Area */}
-                <div className="flex-1 overflow-y-auto p-4">
+                <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-y-auto p-4">
                     {analysisStatus === 'idle' && (
                         <div className="flex flex-col items-center justify-center h-full text-center gap-4 text-muted">
                             <Microscope size={56} className="opacity-20" />
