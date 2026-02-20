@@ -609,7 +609,18 @@ async def run_code_endpoint(req: RunCodeRequest):
     Supports matplotlib: plt.show() is intercepted and the figure is returned
     as a base64-encoded PNG in the `image_b64` field.
     """
-    from src.sandbox import run_code as sandbox_run
+    # REQ-SEC: Scan the user's code BEFORE wrapping it with the matplotlib
+    # helper.  The wrapper legitimately uses `io` and `dir()` which are in the
+    # blocked list — scanning the wrapped version would always fail.
+    from src.sandbox import run_code as sandbox_run, _scan_for_dangerous_imports
+
+    is_safe, security_error = _scan_for_dangerous_imports(req.code)
+    if not is_safe:
+        return {
+            "success": False,
+            "output": security_error,
+            "image_b64": [],
+        }
 
     # Wrap the user code so that matplotlib renders to a buffer instead of a
     # GUI window, and we capture the image as base64.
@@ -639,7 +650,8 @@ if '_fig_bytes_list' in dir() and _fig_bytes_list:
 """
     wrapped = MATPLOTLIB_WRAPPER.format(user_code=req.code)
 
-    success, raw_output = await sandbox_run(wrapped, timeout_s=req.timeout)
+    # Run with skip_scan=True because we already scanned the user code above
+    success, raw_output = await sandbox_run(wrapped, timeout_s=req.timeout, skip_scan=True)
 
     # Parse out any embedded figure data
     image_b64: list[str] = []

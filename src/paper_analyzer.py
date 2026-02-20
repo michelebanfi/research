@@ -64,26 +64,28 @@ SECTION_ANALYSIS_PROMPT = """You are an expert scientific paper analyst with dee
 
 Produce your analysis following this exact structure. Use proper Markdown formatting with headers, bullet points, and LaTeX math ($$...$$ for display equations, $...$ for inline).
 
-**CRITICAL FORMATTING RULES:**
-- All Python code blocks MUST use ```python (never ```code or bare ```).
-- All shell commands MUST use ```bash.
-- All LaTeX snippets MUST use ```latex.
-- Never use generic ```code fences.
+**CRITICAL RULES — READ BEFORE WRITING:**
+1. **ONLY analyze content that is explicitly present in the text above.** Do NOT invent, fabricate, or hallucinate equations, concepts, physical models, or examples that are not in the provided content.
+2. If the section content is sparse, short, or purely administrative (e.g., references, acknowledgments, data availability), produce a SHORT analysis that honestly reflects this. Do not pad with invented material.
+3. If there are no equations in the text, do NOT create fake equations. Instead write: "No equations appear in this section."
+4. All Python code blocks MUST use ```python (never ```code or bare ```).
+5. All shell commands MUST use ```bash. All LaTeX snippets MUST use ```latex.
+6. Never use generic ```code fences.
 
 ## {section_title} — Analysis {section_index}
 
 ### 1. Plain-English Summary
-Explain what this section accomplishes in clear, accessible language — as if briefing a brilliant colleague from a different subfield. Define any domain-specific jargon on first use. Aim for 3–5 sentences that capture *why* this section matters in the paper's overall narrative.
+Explain what this section accomplishes in clear, accessible language — as if briefing a brilliant colleague from a different subfield. Define any domain-specific jargon on first use. Aim for 3–5 sentences that capture *why* this section matters in the paper's overall narrative. **Base this entirely on what the text says, not on general knowledge.**
 
 ### 2. Mathematical Analysis
-- Re-state every equation, theorem, lemma, or proposition in LaTeX.
+- Re-state every equation, theorem, lemma, or proposition that **actually appears in the provided text** in LaTeX.
 - For each equation: name every variable/symbol and explain its role.
 - If a proof is presented, decompose it into numbered logical steps and explain the reasoning behind each transition.
 - Highlight any clever mathematical techniques or non-obvious tricks (e.g., change of variables, bounding arguments, symmetry exploitation).
-- If no significant math appears, write: "This section is primarily descriptive; no formal mathematical content to analyze."
+- If no significant math appears in the provided text, write: "This section is primarily descriptive; no formal mathematical content to analyze."
 
 ### 3. Physical / Intuitive Meaning
-Explain the physical, geometric, or practical significance of the main results. What does the math *mean* concretely? Why should a practitioner care? Provide an analogy if one helps. Connect the result to real-world implications or engineering constraints when applicable.
+Explain the physical, geometric, or practical significance of the main results **described in this section**. What does the math *mean* concretely? Why should a practitioner care? Provide an analogy if one helps. Connect the result to real-world implications or engineering constraints when applicable. **Only discuss concepts that are mentioned or implied by the provided content.**
 
 ### 4. Connections & Context
 - How does this section build on or connect to other parts of the paper?
@@ -91,11 +93,11 @@ Explain the physical, geometric, or practical significance of the main results. 
 - What assumptions does it rely on, and what are their practical limitations?
 
 ### 5. Visualization Code
-If there is an equation, distribution, function, scaling behavior, or data relationship that can be usefully visualized, provide a **self-contained** Python snippet using numpy + matplotlib. Requirements:
+If there is an equation, distribution, function, scaling behavior, or data relationship **in the provided text** that can be usefully visualized, provide a **self-contained** Python snippet using numpy + matplotlib. Requirements:
 - Must run standalone (include all imports)
 - Use clear axis labels, a descriptive title, and a legend if multiple curves are plotted
 - Use `plt.tight_layout()` before `plt.show()`
-- If truly no visualization is appropriate (e.g., purely qualitative discussion), write: "No visualization applicable for this section."
+- If truly no visualization is appropriate (e.g., purely qualitative discussion), write: "No visualization applicable for this section." Do NOT create a visualization of invented data.
 
 ```python
 # Your complete, runnable visualization code here

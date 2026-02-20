@@ -108,7 +108,8 @@ def _scan_for_dangerous_imports(code: str) -> Tuple[bool, str]:
 
 async def run_code(
     code: str, 
-    timeout_s: float = None
+    timeout_s: float = None,
+    skip_scan: bool = False,
 ) -> Tuple[bool, str]:
     """
     Execute Python code in an isolated subprocess.
@@ -116,6 +117,7 @@ async def run_code(
     Args:
         code: Python code to execute
         timeout_s: Maximum execution time in seconds (uses Config.SANDBOX_TIMEOUT_S if None)
+        skip_scan: If True, skip the security scan (caller is responsible for pre-scanning)
         
     Returns:
         Tuple of (success: bool, output_or_error: str)
@@ -126,9 +128,10 @@ async def run_code(
     if timeout_s is None:
         timeout_s = Config.SANDBOX_TIMEOUT_S
     # REQ-SEC-01: Pre-execution security scan
-    is_safe, security_error = _scan_for_dangerous_imports(code)
-    if not is_safe:
-        return False, security_error
+    if not skip_scan:
+        is_safe, security_error = _scan_for_dangerous_imports(code)
+        if not is_safe:
+            return False, security_error
     
     # Wrap the code in a script that captures output
     script = _build_script(code)
