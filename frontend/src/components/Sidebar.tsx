@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { api } from '../services/api'
 import { Folder, Plus, Moon, Sun, Cpu, MessageSquare, Trash2 } from 'lucide-react'
@@ -16,8 +16,57 @@ export default function Sidebar() {
     chats,
     currentChatId,
     createNewChat,
-    switchChat
+    switchChat,
+    setChats,
+    loadChatHistory
   } = useAppStore()
+
+  // Load persisted chats when project changes
+  useEffect(() => {
+    if (!selectedProject) return
+
+    const loadChats = async () => {
+      try {
+        const savedChats = await api.getChats(selectedProject.id)
+        
+        // Convert saved chats to store format
+        const chatsMap: Record<string, any[]> = {}
+        for (const chat of savedChats) {
+          chatsMap[chat.id] = chat.messages || []
+        }
+        
+        if (Object.keys(chatsMap).length > 0) {
+          setChats(chatsMap)
+        }
+      } catch (error) {
+        console.error('Failed to load chats:', error)
+      }
+    }
+
+    loadChats()
+  }, [selectedProject, setChats])
+
+  // Load full chat messages when switching to a saved chat
+  useEffect(() => {
+    if (!selectedProject || !currentChatId) return
+
+    const loadChatMessages = async () => {
+      // Only load if we don't have messages for this chat yet
+      const existingMessages = chats[currentChatId]
+      if (existingMessages && existingMessages.length > 0) return
+
+      try {
+        const chatData = await api.getChat(selectedProject.id, currentChatId)
+        if (chatData && chatData.messages) {
+          loadChatHistory(currentChatId, chatData.messages)
+        }
+      } catch (error) {
+        console.error('Failed to load chat messages:', error)
+      }
+    }
+
+    loadChatMessages()
+  }, [currentChatId, selectedProject, chats, loadChatHistory])
 
   const toggleTheme = () => {
     const newIsDark = !isDark

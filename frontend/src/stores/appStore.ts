@@ -62,6 +62,7 @@ interface AppState {
   setCurrentChatId: (id: string | null) => void
   createNewChat: () => void
   switchChat: (id: string) => void
+  loadChatHistory: (chatId: string, messages: ChatMessage[]) => void
 
   // Agent Events
   agentEvents: AgentEvent[]
@@ -148,6 +149,13 @@ export const useAppStore = create<AppState>((set) => ({
     retrievedChunks: [],
     matchedConcepts: []
   })),
+  loadChatHistory: (chatId: string, messages: ChatMessage[]) => set((state) => {
+    const newChats = { ...state.chats, [chatId]: messages }
+    return { 
+      chats: newChats,
+      chatHistory: state.currentChatId === chatId ? messages : state.chatHistory
+    }
+  }),
 
   // Agent Events
   agentEvents: [],
