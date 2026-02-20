@@ -143,25 +143,34 @@ body {
 }
 
 .markdown-content code {
-  background: #f1f5f9;
-  padding: 0.125rem 0.375rem;
-  border-radius: 0.25rem;
-  font-size: 0.875rem;
-  font-family: ui-monospace, monospace;
+  background: #f0f4f8;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.3rem;
+  font-size: 0.8125rem;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+  color: #1e293b;
 }
 
-/* Only apply light background to bare <pre> tags, not RunCodeBlock's dark pre */
+/* Only apply light background to bare <pre> tags, not RunCodeBlock wrapper */
 .markdown-content pre:not(.run-code-pre) {
-  background: #f1f5f9;
-  padding: 0.75rem;
-  border-radius: 0.5rem;
+  background: #f6f8fa;
+  padding: 1rem 1.25rem;
+  border-radius: 0.625rem;
+  border: 1px solid #e2e8f0;
   overflow-x: auto;
-  margin: 0.5rem 0;
+  margin: 0.75rem 0;
 }
 
 .markdown-content pre:not(.run-code-pre) code {
   background: transparent;
   padding: 0;
+  color: inherit;
+}
+
+/* RunCodeBlock wrapper — ensure no generic pre styles leak in */
+.code-block-wrapper pre {
+  background: transparent !important;
+  border: none !important;
 }
 
 .markdown-content blockquote {
@@ -217,6 +226,16 @@ body {
 
 .dark .markdown-content pre:not(.run-code-pre) {
   background: #1e293b;
+  border-color: #334155;
+}
+
+.dark .code-block-wrapper {
+  border-color: #334155;
+}
+
+.dark .code-block-wrapper>div:first-child {
+  background: #1e293b;
+  border-color: #334155;
 }
 
 .dark .markdown-content blockquote {

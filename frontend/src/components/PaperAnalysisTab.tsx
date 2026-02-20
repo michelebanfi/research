@@ -312,7 +312,7 @@ export default function PaperAnalysisTab() {
                                                 )
                                             }
                                             return (
-                                                <code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-sm" {...props}>
+                                                <code className="bg-[#f0f4f8] dark:bg-slate-800 px-1.5 py-0.5 rounded text-[0.8125rem] text-slate-800 dark:text-slate-200 font-mono" {...props}>
                                                     {children}
                                                 </code>
                                             )

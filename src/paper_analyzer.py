@@ -53,7 +53,7 @@ class AnalysisEvent:
 # Analysis prompt templates
 # ---------------------------------------------------------------------------
 
-SECTION_ANALYSIS_PROMPT = """You are an expert scientific paper analyst. Your goal is to deeply analyze the following section of a research paper and produce a comprehensive Markdown explanation.
+SECTION_ANALYSIS_PROMPT = """You are an expert scientific paper analyst with deep knowledge across physics, mathematics, computer science, and engineering. Analyze the following section of a research paper and produce a comprehensive, well-structured Markdown explanation.
 
 ## Section: {section_title}
 
@@ -62,34 +62,50 @@ SECTION_ANALYSIS_PROMPT = """You are an expert scientific paper analyst. Your go
 
 ---
 
-Please provide a thorough analysis of this section using the following structure. Use proper Markdown formatting with headers, bullet points, and LaTeX math (wrapped in $$...$$ for display equations and $...$ for inline).
+Produce your analysis following this exact structure. Use proper Markdown formatting with headers, bullet points, and LaTeX math ($$...$$ for display equations, $...$ for inline).
 
-## {section_title} — Analysis
+**CRITICAL FORMATTING RULES:**
+- All Python code blocks MUST use ```python (never ```code or bare ```).
+- All shell commands MUST use ```bash.
+- All LaTeX snippets MUST use ```latex.
+- Never use generic ```code fences.
+
+## {section_title} — Analysis {section_index}
 
 ### 1. Plain-English Summary
-Explain what this section is doing in accessible language, as if to a smart colleague from a different subfield. Avoid unnecessary jargon; define any jargon you must use.
+Explain what this section accomplishes in clear, accessible language — as if briefing a brilliant colleague from a different subfield. Define any domain-specific jargon on first use. Aim for 3–5 sentences that capture *why* this section matters in the paper's overall narrative.
 
 ### 2. Mathematical Analysis
 - Re-state every equation, theorem, lemma, or proposition in LaTeX.
-- Briefly explain the role of each variable/symbol.
-- If the section contains a proof, break it down step-by-step.
-- Highlight any key mathematical insights or tricks used.
+- For each equation: name every variable/symbol and explain its role.
+- If a proof is presented, decompose it into numbered logical steps and explain the reasoning behind each transition.
+- Highlight any clever mathematical techniques or non-obvious tricks (e.g., change of variables, bounding arguments, symmetry exploitation).
+- If no significant math appears, write: "This section is primarily descriptive; no formal mathematical content to analyze."
 
 ### 3. Physical / Intuitive Meaning
-Explain the physical, geometric, or practical meaning behind the main results. What does the math actually *mean*? Why does it matter? If applicable, give an analogy.
+Explain the physical, geometric, or practical significance of the main results. What does the math *mean* concretely? Why should a practitioner care? Provide an analogy if one helps. Connect the result to real-world implications or engineering constraints when applicable.
 
-### 4. Visualization Code (if applicable)
-If there is an equation, distribution, function, or concept that can be usefully visualized, provide a self-contained Python snippet (using numpy + matplotlib) that plots or demonstrates it. Use clear axis labels and a descriptive title. If no visualization is appropriate, write "No visualization needed for this section."
+### 4. Connections & Context
+- How does this section build on or connect to other parts of the paper?
+- Does it extend, generalize, or contradict prior work mentioned in the paper?
+- What assumptions does it rely on, and what are their practical limitations?
+
+### 5. Visualization Code
+If there is an equation, distribution, function, scaling behavior, or data relationship that can be usefully visualized, provide a **self-contained** Python snippet using numpy + matplotlib. Requirements:
+- Must run standalone (include all imports)
+- Use clear axis labels, a descriptive title, and a legend if multiple curves are plotted
+- Use `plt.tight_layout()` before `plt.show()`
+- If truly no visualization is appropriate (e.g., purely qualitative discussion), write: "No visualization applicable for this section."
 
 ```python
-# Your visualization code here (or omit the block if not applicable)
+# Your complete, runnable visualization code here
 ```
 
-### 5. Key Takeaways
-A concise bullet-point list of the most important points from this section.
+### 6. Key Takeaways
+A concise bullet-point list (3–5 items) of the most important insights from this section. Each point should be a standalone sentence that a reader could scan independently.
 """
 
-INTRO_PROMPT = """You are analyzing a scientific paper. Provide a brief structured preamble.
+INTRO_PROMPT = """You are analyzing a scientific paper. Produce a structured preamble that orients the reader before diving into section-by-section analysis.
 
 ## Paper Title / Identifier:
 {paper_name}
@@ -97,12 +113,26 @@ INTRO_PROMPT = """You are analyzing a scientific paper. Provide a brief structur
 ## File Summary (if available):
 {summary}
 
-Please write a short, engaging introduction for the analysis document:
-- What is this paper about? (2-3 sentences)
-- What are the main contributions? (bullet list)
-- What background knowledge is helpful to understand it?
+**CRITICAL FORMATTING RULES:**
+- All Python code blocks MUST use ```python (never ```code or bare ```).
+- All shell commands MUST use ```bash.
+- Never use generic ```code fences.
 
-Format as Markdown.
+Produce the following sections in Markdown:
+
+# Analysis of: {paper_name}
+
+### What This Paper Is About
+2–3 sentences summarizing the core problem, approach, and setting.
+
+### Main Contributions
+A bullet list of the paper's key contributions or novel results.
+
+### Prerequisites & Background
+What background knowledge (concepts, prior papers, mathematical tools) is most helpful for understanding this work? Keep it to 3–5 items with brief explanations.
+
+### Reading Guide
+Briefly describe how the paper is organized and what the reader should expect from each major part of the analysis that follows.
 """
 
 
@@ -309,6 +339,7 @@ class PaperAnalyzer:
                 prompt = SECTION_ANALYSIS_PROMPT.format(
                     section_title=title,
                     chunk_text=content_text,
+                    section_index=idx + 1,
                 )
                 section_md = await self.ai_engine._openrouter_generate(prompt)
             except Exception as e:
