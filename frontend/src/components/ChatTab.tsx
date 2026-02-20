@@ -141,6 +141,7 @@ export default function ChatTab() {
       chatSocket.send({
         message: input,
         project_id: selectedProject.id,
+        chat_id: useAppStore.getState().currentChatId || undefined,
         chat_history: chatHistory.slice(0, -1), // Exclude the message we just added
         do_rerank: doRerank,
         reasoning_mode: reasoningMode,

@@ -38,6 +38,7 @@ from src.agent import ResearchAgent
 from src.agent import AgentResponse
 from src.models import ReasoningResponse
 from src.config import Config
+from src import persistence
 from flashrank import Ranker
 
 # Global state (simple, effective for single-user)
@@ -366,6 +367,66 @@ async def get_file_sections(file_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
+# Chat Persistence REST Endpoints
+# ============================================================================
+
+class SaveChatRequest(BaseModel):
+    title: str = ""
+    messages: List[Dict[str, Any]] = []
+
+@app.get("/api/projects/{project_id}/chats")
+async def get_chats(project_id: str):
+    """List persisted chats for a project"""
+    return persistence.list_chats(project_id)
+
+@app.get("/api/projects/{project_id}/chats/{chat_id}")
+async def get_chat(project_id: str, chat_id: str):
+    """Load a single persisted chat"""
+    data = persistence.load_chat(project_id, chat_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return data
+
+@app.post("/api/projects/{project_id}/chats/{chat_id}")
+async def save_chat(project_id: str, chat_id: str, body: SaveChatRequest):
+    """Save or update a chat"""
+    persistence.save_chat(project_id, chat_id, body.dict())
+    return {"success": True}
+
+@app.delete("/api/projects/{project_id}/chats/{chat_id}")
+async def delete_chat(project_id: str, chat_id: str):
+    """Delete a persisted chat"""
+    deleted = persistence.delete_chat(project_id, chat_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"success": True}
+
+# ============================================================================
+# Analysis Persistence REST Endpoints
+# ============================================================================
+
+@app.get("/api/projects/{project_id}/analyses")
+async def get_analyses(project_id: str):
+    """List persisted analyses for a project"""
+    return persistence.list_analyses(project_id)
+
+@app.get("/api/projects/{project_id}/analyses/{file_id}")
+async def get_analysis(project_id: str, file_id: str):
+    """Load a single persisted analysis"""
+    data = persistence.load_analysis(project_id, file_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return data
+
+@app.delete("/api/projects/{project_id}/analyses/{file_id}")
+async def delete_analysis_endpoint(project_id: str, file_id: str):
+    """Delete a persisted analysis"""
+    deleted = persistence.delete_analysis(project_id, file_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return {"success": True}
+
+# ============================================================================
 # WebSocket for Chat Streaming
 # ============================================================================
 
@@ -411,6 +472,7 @@ async def websocket_chat(websocket: WebSocket):
             # Parse request
             message = data.get('message', '')
             project_id = data.get('project_id')
+            chat_id = data.get('chat_id')  # for persistence
             chat_history = data.get('chat_history', [])
             do_rerank = data.get('do_rerank', True)
             reasoning_mode = data.get('reasoning_mode', False)
@@ -500,6 +562,26 @@ async def websocket_chat(websocket: WebSocket):
                         }
                     }, websocket)
 
+                # --- Auto-save chat to persistence ---
+                if chat_id and project_id:
+                    try:
+                        answer_text = (
+                            (result.final_output if result.success else result.error)
+                            if isinstance(result, ReasoningResponse)
+                            else result.answer
+                        )
+                        all_messages = list(chat_history) + [
+                            {"role": "user", "content": message},
+                            {"role": "assistant", "content": answer_text, "model": result.model_name},
+                        ]
+                        title = all_messages[0]["content"][:60] if all_messages else "Untitled"
+                        persistence.save_chat(project_id, chat_id, {
+                            "title": title,
+                            "messages": all_messages,
+                        })
+                    except Exception as pe:
+                        logger.warning(f"Failed to persist chat: {pe}")
+
                 logger.info(f"Chat completed. Model: {result.model_name}")
 
             except Exception as e:
@@ -577,6 +659,23 @@ async def websocket_analyze(websocket: WebSocket):
                         "file_id": file_id,
                     }
                 }, websocket)
+
+                # --- Auto-save analysis to persistence ---
+                try:
+                    # Resolve file name for display
+                    file_name = file_id
+                    try:
+                        fr = app_state.db.client.table("files").select("name").eq("id", file_id).execute()
+                        if fr.data:
+                            file_name = fr.data[0]["name"]
+                    except Exception:
+                        pass
+                    persistence.save_analysis(project_id, file_id, {
+                        "file_name": file_name,
+                        "markdown": final_markdown,
+                    })
+                except Exception as pe:
+                    logger.warning(f"Failed to persist analysis: {pe}")
 
                 logger.info(f"Paper analysis completed for file {file_id}")
 

@@ -1,17 +1,17 @@
 import { useState } from 'react'
 import { useAppStore } from '../stores/appStore'
 import { api } from '../services/api'
-import { Folder, Plus, Moon, Sun, Cpu, MessageSquare } from 'lucide-react'
+import { Folder, Plus, Moon, Sun, Cpu, MessageSquare, Trash2 } from 'lucide-react'
 
 export default function Sidebar() {
   const [isCreating, setIsCreating] = useState(false)
   const [newProjectName, setNewProjectName] = useState('')
   const [isDark, setIsDark] = useState(false)
-  
-  const { 
-    projects, 
-    selectedProject, 
-    setSelectedProject, 
+
+  const {
+    projects,
+    selectedProject,
+    setSelectedProject,
     setProjects,
     chats,
     currentChatId,
@@ -31,7 +31,7 @@ export default function Sidebar() {
 
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) return
-    
+
     try {
       const project = await api.createProject(newProjectName)
       setProjects([project, ...projects])
@@ -114,11 +114,10 @@ export default function Sidebar() {
             <button
               key={project.id}
               onClick={() => setSelectedProject(project)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${
-                selectedProject?.id === project.id
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${selectedProject?.id === project.id
                   ? 'bg-secondary/10 text-secondary border border-secondary/20'
                   : 'hover:bg-slate-100 dark:hover:bg-muted/10 border border-transparent'
-              }`}
+                }`}
             >
               <Folder size={18} className={
                 selectedProject?.id === project.id ? 'text-secondary' : 'text-muted'
@@ -126,7 +125,7 @@ export default function Sidebar() {
               <span className="flex-1 truncate text-sm">{project.name}</span>
             </button>
           ))}
-          
+
           {projects.length === 0 && (
             <p className="text-sm text-muted text-center py-4">
               No projects yet
@@ -153,28 +152,53 @@ export default function Sidebar() {
 
           <div className="space-y-1">
             {Object.entries(chats).map(([chatId, messages]) => {
-              const label = messages.length > 0 
+              const label = messages.length > 0
                 ? messages[0].content.slice(0, 30) + (messages[0].content.length > 30 ? '...' : '')
                 : `Chat ${Object.keys(chats).indexOf(chatId) + 1}`
-              
+
               return (
-                <button
+                <div
                   key={chatId}
-                  onClick={() => switchChat(chatId)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors ${
-                    currentChatId === chatId
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors group ${currentChatId === chatId
                       ? 'bg-secondary/10 text-secondary border border-secondary/20'
                       : 'hover:bg-slate-100 dark:hover:bg-muted/10 border border-transparent'
-                  }`}
+                    }`}
                 >
-                  <MessageSquare size={18} className={
-                    currentChatId === chatId ? 'text-secondary' : 'text-muted'
-                  } />
-                  <span className="flex-1 truncate text-sm">{label}</span>
-                </button>
+                  <button
+                    onClick={() => switchChat(chatId)}
+                    className="flex items-center gap-3 flex-1 min-w-0"
+                  >
+                    <MessageSquare size={18} className={
+                      currentChatId === chatId ? 'text-secondary' : 'text-muted'
+                    } />
+                    <span className="flex-1 truncate text-sm">{label}</span>
+                  </button>
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation()
+                      if (!selectedProject) return
+                      try {
+                        await api.deleteChat(selectedProject.id, chatId)
+                        const newChats = { ...chats }
+                        delete newChats[chatId]
+                        useAppStore.getState().setChats(newChats)
+                        if (currentChatId === chatId) {
+                          useAppStore.getState().setCurrentChatId(null)
+                          useAppStore.getState().clearChat()
+                        }
+                      } catch (err) {
+                        console.error('Failed to delete chat:', err)
+                      }
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all"
+                    title="Delete chat"
+                  >
+                    <Trash2 size={14} className="text-red-400" />
+                  </button>
+                </div>
               )
             })}
-            
+
             {Object.keys(chats).length === 0 && (
               <button
                 onClick={createNewChat}

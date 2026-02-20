@@ -173,6 +173,8 @@ class AIEngine:
                     kwargs["response_format"] = response_format
                 
                 response = await self.async_openai_client.chat.completions.create(**kwargs)
+                if not response.choices:
+                    raise ValueError("OpenRouter returned empty choices — possibly a bad request or rate limit")
                 content = response.choices[0].message.content or ""
                 if return_model_name:
                     return content, response.model
@@ -199,6 +201,8 @@ class AIEngine:
                 kwargs["response_format"] = response_format
 
             response = await self.async_openai_client.chat.completions.create(**kwargs)
+            if not response.choices:
+                raise ValueError("OpenRouter returned empty choices — possibly a bad request or rate limit")
             content = response.choices[0].message.content or ""
             if return_model_name:
                 return content, response.model
@@ -242,6 +246,8 @@ class AIEngine:
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}]
                 )
+                if not response.choices:
+                    raise ValueError("OpenRouter returned empty choices")
                 return response.choices[0].message.content or ""
             except Exception as e:
                 last_error = e

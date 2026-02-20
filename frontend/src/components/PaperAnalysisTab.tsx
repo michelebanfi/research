@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAppStore, AnalysisEvent } from '../stores/appStore'
-import { analysisSocket } from '../services/api'
+import { analysisSocket, api } from '../services/api'
 import RunCodeBlock from './RunCodeBlock'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
@@ -20,6 +20,7 @@ import {
     Sparkles,
     Wifi,
     WifiOff,
+    History,
 } from 'lucide-react'
 
 type SectionStatus = 'pending' | 'analyzing' | 'done' | 'error'
@@ -43,6 +44,8 @@ export default function PaperAnalysisTab() {
         setAnalysisMarkdown,
         setSelectedAnalysisFileId,
         resetAnalysis,
+        savedAnalyses,
+        setSavedAnalyses,
     } = useAppStore()
 
     const [sections, setSections] = useState<SectionEntry[]>([])
@@ -59,6 +62,14 @@ export default function PaperAnalysisTab() {
         }, 1000)
         return () => clearInterval(interval)
     }, [])
+
+    // Load saved analyses when project changes
+    useEffect(() => {
+        if (!selectedProject) return
+        api.getAnalyses(selectedProject.id)
+            .then(setSavedAnalyses)
+            .catch(() => setSavedAnalyses([]))
+    }, [selectedProject, setSavedAnalyses])
 
     // Auto-scroll output as content comes in — scroll the container directly
     // to avoid scrollIntoView accidentally scrolling the page.
@@ -267,6 +278,43 @@ export default function PaperAnalysisTab() {
                                     math breakdowns, and visualization code.
                                 </p>
                             </div>
+
+                            {/* Previously saved analyses */}
+                            {savedAnalyses.length > 0 && (
+                                <div className="mt-4 w-full max-w-md text-left">
+                                    <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-1">
+                                        <History size={12} />
+                                        Previous Analyses
+                                    </p>
+                                    <div className="space-y-1">
+                                        {savedAnalyses.map((a: any) => (
+                                            <button
+                                                key={a.file_id}
+                                                onClick={async () => {
+                                                    if (!selectedProject) return
+                                                    try {
+                                                        const full = await api.getAnalysis(selectedProject.id, a.file_id)
+                                                        setSelectedAnalysisFileId(a.file_id)
+                                                        setAnalysisMarkdown(full.markdown)
+                                                        setAnalysisStatus('complete')
+                                                    } catch (err) {
+                                                        console.error('Failed to load analysis:', err)
+                                                    }
+                                                }}
+                                                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors hover:bg-slate-100 dark:hover:bg-muted/10 border border-transparent hover:border-border"
+                                            >
+                                                <FileText size={16} className="text-secondary shrink-0" />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-medium truncate text-text">{a.file_name}</p>
+                                                    <p className="text-xs text-muted">
+                                                        {new Date(a.updated_at).toLocaleDateString()} · {new Date(a.updated_at).toLocaleTimeString()}
+                                                    </p>
+                                                </div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
 

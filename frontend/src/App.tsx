@@ -34,7 +34,7 @@ function App() {
     loadProjects()
   }, [setProjects])
 
-  // Load files when project changes
+  // Load files and persisted chats when project changes
   useEffect(() => {
     const loadFiles = async () => {
       if (selectedProject) {
@@ -46,6 +46,18 @@ function App() {
           clearAgentEvents()
           // Reset current chat ID
           setCurrentChatId(null)
+
+          // Load persisted chats
+          try {
+            const savedChats = await api.getChats(selectedProject.id)
+            const chatsMap: Record<string, any[]> = {}
+            for (const c of savedChats) {
+              chatsMap[c.id] = c.messages || []
+            }
+            useAppStore.getState().setChats(chatsMap)
+          } catch (e) {
+            console.warn('Failed to load persisted chats:', e)
+          }
         } catch (error) {
           console.error('Failed to load files:', error)
         }
@@ -66,8 +78,8 @@ function App() {
               <button
                 onClick={() => setActiveTab('chat')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'chat'
-                    ? 'bg-secondary text-white shadow-sm'
-                    : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                  ? 'bg-secondary text-white shadow-sm'
+                  : 'hover:bg-slate-100 dark:hover:bg-muted/20'
                   }`}
               >
                 <MessageSquare size={16} />
@@ -76,8 +88,8 @@ function App() {
               <button
                 onClick={() => setActiveTab('ingest')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'ingest'
-                    ? 'bg-secondary text-white shadow-sm'
-                    : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                  ? 'bg-secondary text-white shadow-sm'
+                  : 'hover:bg-slate-100 dark:hover:bg-muted/20'
                   }`}
               >
                 <Upload size={16} />
@@ -86,8 +98,8 @@ function App() {
               <button
                 onClick={() => setActiveTab('graph')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'graph'
-                    ? 'bg-secondary text-white shadow-sm'
-                    : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                  ? 'bg-secondary text-white shadow-sm'
+                  : 'hover:bg-slate-100 dark:hover:bg-muted/20'
                   }`}
               >
                 <Share2 size={16} />
@@ -96,8 +108,8 @@ function App() {
               <button
                 onClick={() => setActiveTab('langgraph')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'langgraph'
-                    ? 'bg-secondary text-white shadow-sm'
-                    : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                  ? 'bg-secondary text-white shadow-sm'
+                  : 'hover:bg-slate-100 dark:hover:bg-muted/20'
                   }`}
               >
                 <Radius size={16} />
@@ -106,8 +118,8 @@ function App() {
               <button
                 onClick={() => setActiveTab('analyze')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'analyze'
-                    ? 'bg-secondary text-white shadow-sm'
-                    : 'hover:bg-slate-100 dark:hover:bg-muted/20'
+                  ? 'bg-secondary text-white shadow-sm'
+                  : 'hover:bg-slate-100 dark:hover:bg-muted/20'
                   }`}
               >
                 <Microscope size={16} />

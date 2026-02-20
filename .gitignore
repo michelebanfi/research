@@ -80,5 +80,8 @@ coverage/
 *.bak
 *.orig
 
+# Local persistence
+.data/
+
 # OS
 Thumbs.db

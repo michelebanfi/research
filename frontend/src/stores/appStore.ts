@@ -100,6 +100,11 @@ interface AppState {
   setAnalysisMarkdown: (md: string) => void
   setSelectedAnalysisFileId: (id: string | null) => void
   resetAnalysis: () => void
+
+  // Persistence
+  savedAnalyses: any[]
+  setSavedAnalyses: (analyses: any[]) => void
+  setChats: (chats: Record<string, ChatMessage[]>) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -195,4 +200,9 @@ export const useAppStore = create<AppState>((set) => ({
     analysisEvents: [],
     analysisMarkdown: '',
   }),
+
+  // Persistence
+  savedAnalyses: [],
+  setSavedAnalyses: (analyses) => set({ savedAnalyses: analyses }),
+  setChats: (chats) => set({ chats }),
 }))
