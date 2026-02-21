@@ -18,7 +18,8 @@ function App() {
     setProjects,
     clearChat,
     clearAgentEvents,
-    setCurrentChatId
+    setCurrentChatId,
+    resetAnalysis,
   } = useAppStore()
 
   // Load projects on mount
@@ -46,6 +47,8 @@ function App() {
           clearAgentEvents()
           // Reset current chat ID
           setCurrentChatId(null)
+          // Reset analysis state
+          resetAnalysis()
 
           // Load persisted chats
           try {
@@ -64,7 +67,7 @@ function App() {
       }
     }
     loadFiles()
-  }, [selectedProject, clearChat, clearAgentEvents, setCurrentChatId])
+  }, [selectedProject, clearChat, clearAgentEvents, setCurrentChatId, resetAnalysis])
 
   return (
     <div className="flex h-screen bg-background text-text">

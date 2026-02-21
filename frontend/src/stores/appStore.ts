@@ -96,10 +96,12 @@ interface AppState {
   analysisEvents: AnalysisEvent[]
   analysisMarkdown: string
   selectedAnalysisFileId: string | null
+  currentAnalysisId: string | null
   setAnalysisStatus: (status: AnalysisStatus) => void
   addAnalysisEvent: (event: AnalysisEvent) => void
   setAnalysisMarkdown: (md: string) => void
   setSelectedAnalysisFileId: (id: string | null) => void
+  setCurrentAnalysisId: (id: string | null) => void
   resetAnalysis: () => void
 
   // Persistence
@@ -151,7 +153,7 @@ export const useAppStore = create<AppState>((set) => ({
   })),
   loadChatHistory: (chatId: string, messages: ChatMessage[]) => set((state) => {
     const newChats = { ...state.chats, [chatId]: messages }
-    return { 
+    return {
       chats: newChats,
       chatHistory: state.currentChatId === chatId ? messages : state.chatHistory
     }
@@ -191,6 +193,7 @@ export const useAppStore = create<AppState>((set) => ({
   analysisEvents: [],
   analysisMarkdown: '',
   selectedAnalysisFileId: null,
+  currentAnalysisId: null,
   setAnalysisStatus: (status) => set({ analysisStatus: status }),
   addAnalysisEvent: (event) => set((state) => ({
     analysisEvents: [...state.analysisEvents, event],
@@ -203,10 +206,12 @@ export const useAppStore = create<AppState>((set) => ({
   })),
   setAnalysisMarkdown: (md) => set({ analysisMarkdown: md }),
   setSelectedAnalysisFileId: (id) => set({ selectedAnalysisFileId: id }),
+  setCurrentAnalysisId: (id) => set({ currentAnalysisId: id }),
   resetAnalysis: () => set({
     analysisStatus: 'idle',
     analysisEvents: [],
     analysisMarkdown: '',
+    currentAnalysisId: null,
   }),
 
   // Persistence

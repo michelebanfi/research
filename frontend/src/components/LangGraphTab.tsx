@@ -66,7 +66,7 @@ graph TD
     assemble[Assemble Full Markdown] --> complete[Emit complete Event]
     complete --> finish([Download .md]):::last
 
-    subgraph Prompt Structure ["Per-Section Prompt"]
+    subgraph PromptStructure ["Per-Section Prompt"]
         p1["1 — Plain-English Summary"]
         p2["2 — Mathematical Analysis (LaTeX)"]
         p3["3 — Physical / Intuitive Meaning"]
@@ -74,7 +74,7 @@ graph TD
         p5["5 — Key Takeaways"]
     end
 
-    build_prompt -.->|fills| Prompt Structure
+    build_prompt -.->|fills| PromptStructure
 
     subgraph Frontend ["Frontend — Live Streaming"]
         ws["/ws/analyze WebSocket"]
@@ -180,8 +180,8 @@ export default function LangGraphTab() {
             <button
               onClick={() => setActiveTab("agent")}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all ${activeTab === "agent"
-                  ? "bg-white dark:bg-surface shadow text-secondary"
-                  : "text-muted hover:text-text"
+                ? "bg-white dark:bg-surface shadow text-secondary"
+                : "text-muted hover:text-text"
                 }`}
             >
               <MessageSquare size={13} />
@@ -190,8 +190,8 @@ export default function LangGraphTab() {
             <button
               onClick={() => setActiveTab("analyze")}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all ${activeTab === "analyze"
-                  ? "bg-white dark:bg-surface shadow text-secondary"
-                  : "text-muted hover:text-text"
+                ? "bg-white dark:bg-surface shadow text-secondary"
+                : "text-muted hover:text-text"
                 }`}
             >
               <Microscope size={13} />

@@ -21,6 +21,8 @@ import {
     Wifi,
     WifiOff,
     History,
+    Plus,
+    Trash2,
 } from 'lucide-react'
 
 type SectionStatus = 'pending' | 'analyzing' | 'done' | 'error'
@@ -39,10 +41,12 @@ export default function PaperAnalysisTab() {
         analysisStatus,
         analysisMarkdown,
         selectedAnalysisFileId,
+        currentAnalysisId,
         setAnalysisStatus,
         addAnalysisEvent,
         setAnalysisMarkdown,
         setSelectedAnalysisFileId,
+        setCurrentAnalysisId,
         resetAnalysis,
         savedAnalyses,
         setSavedAnalyses,
@@ -70,6 +74,14 @@ export default function PaperAnalysisTab() {
             .then(setSavedAnalyses)
             .catch(() => setSavedAnalyses([]))
     }, [selectedProject, setSavedAnalyses])
+
+    // Reset analysis state when project changes (like chat does)
+    useEffect(() => {
+        resetAnalysis()
+        setSections([])
+        setErrorMessage(null)
+        setTotalSections(0)
+    }, [selectedProject])
 
     // Auto-scroll output as content comes in — scroll the container directly
     // to avoid scrollIntoView accidentally scrolling the page.
@@ -158,9 +170,6 @@ export default function PaperAnalysisTab() {
         setAnalysisStatus('connecting')
 
         try {
-            // The real message handler is already set up by the useEffect on mount.
-            // Do NOT call analysisSocket.connect() again here — that would overwrite
-            // the callback and swallow all incoming events.
             setTimeout(() => {
                 try {
                     analysisSocket.send({
@@ -175,6 +184,43 @@ export default function PaperAnalysisTab() {
         } catch (e) {
             setAnalysisStatus('error')
             setErrorMessage(`Failed to start analysis: ${e}`)
+        }
+    }
+
+    const handleNewAnalysis = () => {
+        resetAnalysis()
+        setSections([])
+        setErrorMessage(null)
+        setTotalSections(0)
+    }
+
+    const handleLoadAnalysis = async (fileId: string) => {
+        if (!selectedProject) return
+        try {
+            const full = await api.getAnalysis(selectedProject.id, fileId)
+            setSelectedAnalysisFileId(fileId)
+            setCurrentAnalysisId(fileId)
+            setAnalysisMarkdown(full.markdown)
+            setAnalysisStatus('complete')
+            setSections([])
+            setTotalSections(0)
+            setErrorMessage(null)
+        } catch (err) {
+            console.error('Failed to load analysis:', err)
+        }
+    }
+
+    const handleDeleteAnalysis = async (fileId: string) => {
+        if (!selectedProject) return
+        try {
+            await api.deleteAnalysis(selectedProject.id, fileId)
+            setSavedAnalyses(savedAnalyses.filter((a: any) => a.file_id !== fileId))
+            // If we just deleted the currently-viewed analysis, reset the view
+            if (currentAnalysisId === fileId) {
+                handleNewAnalysis()
+            }
+        } catch (err) {
+            console.error('Failed to delete analysis:', err)
         }
     }
 
@@ -210,15 +256,26 @@ export default function PaperAnalysisTab() {
                         </div>
                     </div>
 
-                    {analysisStatus === 'complete' && (
-                        <button
-                            onClick={handleDownload}
-                            className="flex items-center gap-2 px-4 py-2 bg-secondary text-white rounded-lg hover:bg-secondary-hover transition-all text-sm font-medium shadow-sm"
-                        >
-                            <Download size={16} />
-                            Download .md
-                        </button>
-                    )}
+                    <div className="flex items-center gap-2">
+                        {analysisStatus === 'complete' && (
+                            <button
+                                onClick={handleDownload}
+                                className="flex items-center gap-2 px-4 py-2 bg-secondary text-white rounded-lg hover:bg-secondary-hover transition-all text-sm font-medium shadow-sm"
+                            >
+                                <Download size={16} />
+                                Download .md
+                            </button>
+                        )}
+                        {analysisStatus !== 'idle' && (
+                            <button
+                                onClick={handleNewAnalysis}
+                                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-secondary text-white rounded-lg hover:bg-secondary-hover transition-colors"
+                            >
+                                <Plus size={16} />
+                                New Analysis
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {/* File Picker + Analyze Button */}
@@ -278,43 +335,6 @@ export default function PaperAnalysisTab() {
                                     math breakdowns, and visualization code.
                                 </p>
                             </div>
-
-                            {/* Previously saved analyses */}
-                            {savedAnalyses.length > 0 && (
-                                <div className="mt-4 w-full max-w-md text-left">
-                                    <p className="text-xs font-semibold text-muted uppercase tracking-wider mb-2 flex items-center gap-1">
-                                        <History size={12} />
-                                        Previous Analyses
-                                    </p>
-                                    <div className="space-y-1">
-                                        {savedAnalyses.map((a: any) => (
-                                            <button
-                                                key={a.file_id}
-                                                onClick={async () => {
-                                                    if (!selectedProject) return
-                                                    try {
-                                                        const full = await api.getAnalysis(selectedProject.id, a.file_id)
-                                                        setSelectedAnalysisFileId(a.file_id)
-                                                        setAnalysisMarkdown(full.markdown)
-                                                        setAnalysisStatus('complete')
-                                                    } catch (err) {
-                                                        console.error('Failed to load analysis:', err)
-                                                    }
-                                                }}
-                                                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors hover:bg-slate-100 dark:hover:bg-muted/10 border border-transparent hover:border-border"
-                                            >
-                                                <FileText size={16} className="text-secondary shrink-0" />
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="text-sm font-medium truncate text-text">{a.file_name}</p>
-                                                    <p className="text-xs text-muted">
-                                                        {new Date(a.updated_at).toLocaleDateString()} · {new Date(a.updated_at).toLocaleTimeString()}
-                                                    </p>
-                                                </div>
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
                         </div>
                     )}
 
@@ -408,7 +428,7 @@ export default function PaperAnalysisTab() {
                 </div>
             </div>
 
-            {/* ── Right Panel — Live Progress ───────────────────────────── */}
+            {/* ── Right Panel — Live Progress + Past Analyses ─────────── */}
             <div className="w-80 border-l border-border flex flex-col bg-surface/50 shrink-0">
                 <div className="px-4 py-2 border-b border-border font-semibold text-sm flex items-center gap-2">
                     <Layers size={16} />
@@ -446,6 +466,53 @@ export default function PaperAnalysisTab() {
                         </p>
                     </div>
                 )}
+
+                {/* Past Analyses — always visible */}
+                <div className="border-t border-border">
+                    <div className="px-4 py-2 border-b border-border font-semibold text-sm flex items-center gap-2">
+                        <History size={16} />
+                        Previous Analyses
+                    </div>
+                    <div className="overflow-y-auto p-3 space-y-1" style={{ maxHeight: '240px' }}>
+                        {savedAnalyses.length === 0 && (
+                            <p className="text-xs text-muted text-center py-4">
+                                No saved analyses yet.
+                            </p>
+                        )}
+                        {savedAnalyses.map((a: any) => (
+                            <div
+                                key={a.file_id}
+                                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors group ${currentAnalysisId === a.file_id
+                                    ? 'bg-secondary/10 text-secondary border border-secondary/20'
+                                    : 'hover:bg-slate-100 dark:hover:bg-muted/10 border border-transparent'
+                                    }`}
+                            >
+                                <button
+                                    onClick={() => handleLoadAnalysis(a.file_id)}
+                                    className="flex items-center gap-3 flex-1 min-w-0"
+                                >
+                                    <FileText size={16} className={currentAnalysisId === a.file_id ? 'text-secondary shrink-0' : 'text-muted shrink-0'} />
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium truncate text-text">{a.file_name}</p>
+                                        <p className="text-xs text-muted">
+                                            {new Date(a.updated_at).toLocaleDateString()} · {new Date(a.updated_at).toLocaleTimeString()}
+                                        </p>
+                                    </div>
+                                </button>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation()
+                                        handleDeleteAnalysis(a.file_id)
+                                    }}
+                                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all"
+                                    title="Delete analysis"
+                                >
+                                    <Trash2 size={14} className="text-red-400" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
             </div>
         </div>
     )
